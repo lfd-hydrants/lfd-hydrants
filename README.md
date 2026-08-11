@@ -28,6 +28,54 @@ visibility, stats, and exportable reports/backups.
   marked complete for its OWNING division's job the moment anyone logs a
   test against it (e.g. via the manual "search all hydrants" field),
   regardless of which company/division/crew actually recorded it.
+- ✅ Campaigns + admin tiers (`sql/008_campaigns_and_admin_tiers.sql`):
+  - **Campaigns** — an umbrella above jobs. Auto-created the moment the
+    first company/division starts a job for an activity type (named
+    e.g. "Flow Test — started March 2026"), and every other
+    company/division's job for that same activity automatically joins
+    it while it's open. No manual setup required, though a chief can
+    rename or manually pre-create one from the Campaigns tab.
+  - **Chief-level companies** (`companies.is_chief`) — C1 (Chief of
+    Department), C2 (Deputy Chief), and C4 (District Chief) are seeded
+    as chief-level. Logging in as one skips the normal company
+    hydrant-testing flow entirely and goes to a cross-company chief
+    dashboard.
+  - **Personal admin login** (`super_admins` table) — a login not tied
+    to any company, for troubleshooting. Default seeded account:
+    username `admin`, password `changeme2026` — **change this
+    immediately** from Settings → Personal Admin Login once deployed.
+  - **Snow Removal status split** — `snow_cleared_status`
+    (cleared/not_cleared) and `snow_condition_flag` (damaged/oos) are
+    now independent, so a hydrant can be marked Cleared AND Damaged at
+    the same time. The old single `snow_status` column from migration
+    006 is no longer written to (harmless, unused).
+- ✅ **Major app update** (`app/index.html`):
+  - **Chief dashboard** (Campaigns / Reports / Log / Stats / Settings
+    tabs) for chief-level and personal admin logins. Regular company
+    logins only see Home / Log — Stats and Admin/Settings are no
+    longer visible to them.
+  - **Campaigns tab** — browse open/closed campaigns, click into one
+    for a district-wide rollup: overall % complete, a sortable-by-read
+    table of every company/division's progress, hydrants tested in
+    the last 7 days, rename, close/reopen.
+  - **Reports tab** — company + division sub-tabs, a sortable table
+    (click any column header) of every hydrant with its latest test
+    data (condition, wet/dry, flow, static/residual, last tested), a
+    "flagged only" toggle, and a **Custom CSV Export** card — filter
+    by date range, company, division, activity type, wet/dry, and
+    status/condition, export everything matching with all columns.
+  - **Searchable OIC/crew pickers** on Start Shift / Shift Settings —
+    type a few letters to filter instead of scrolling a long dropdown.
+  - **"Edit Shift" renamed to "Shift Settings"**, and its button is now
+    visually distinct (neutral styling) from the red "End Shift"
+    button next to it.
+  - **Hydrant picker** now offers both a browsable dropdown (all
+    hydrants, with company/division shown) and a search box, in
+    addition to the normal pending-list dropdown. Company/division
+    context only shows on the manual picker, not the regular list.
+  - **Snow Removal screen**: Cleared/Not Cleared is one toggle pair;
+    Damaged/OOS is a separate, independent flag that can be combined
+    with either — notes appear if Not Cleared or a flag is set.
 - ✅ **Major rebuild of `app/index.html`**:
   - **Login is now company-based**, not individual accounts — pick a
     Company, enter its shared password, then pick which Division is
@@ -110,6 +158,13 @@ preserves run order (each one may depend on earlier ones), the description
 says what it does at a glance. Next ones in line will likely be something like
 `003_add_photo_storage.sql`, `004_tighten_rls_admin_roles.sql`, etc.
 
+## ⚠️ Before real rollout — change the default admin password
+
+Migration 008 seeds a personal admin login with username `admin` and
+password `changeme2026`. This account can see and edit everything —
+change its password from Settings → Personal Admin Login the moment
+you've confirmed the deploy works, not after.
+
 ## Security note on the company-login model
 
 Since login is now a shared password per company (not individual Supabase
@@ -151,21 +206,25 @@ Practical implications:
    if you haven't already.
 3. Run `sql/006_company_login_and_job_integrity.sql`.
 4. Run `sql/007_hydrant_division_assignment.sql`.
-4. Visit the live site: `https://lfd-hydrants.vercel.app`
-5. On the login screen, pick a Company (e.g. "Engine 1") and enter the
-   password (default for all companies right now: `lfd2026` — change this
-   per-company in Admin → Company Login Codes once you're past testing).
-6. Pick a Division (e.g. "Group 1"). You'll land on Company Home.
-7. Click **Start New Job**, pick an activity, fill in the shift form, Start
-   Shift. Log a couple of sample hydrants, then **End Shift** (leave the job
-   open). Go back to Company Home — the job should still be listed as open
-   with the right pending count. Click **Resume** and confirm you land back
-   in the hydrant entry loop with the same hydrants still excluded.
-8. Try **Close Job Permanently** on a job and confirm a new job for the same
-   activity starts with a full hydrant list again.
-9. Try the **Recently Closed** reopen and the per-job "reopen shift" links.
-10. Check the **District Hydrant Checklist**, **Log**, **Stats**, and **Admin**
-    tabs (including editing a company's login code).
+5. Run `sql/008_campaigns_and_admin_tiers.sql`.
+6. Visit the live site: `https://lfd-hydrants.vercel.app`
+7. **Test a regular company**: sign in as e.g. "Engine 1" (password `lfd2026`),
+   pick a division, Start New Job, log a couple of hydrants, End Shift. Confirm
+   only Home and Log tabs are visible — no Stats/Admin.
+8. **Test chief access**: sign in as "C4" (password `lfd2026`) — this should
+   skip division selection entirely and go straight to a Campaigns/Reports/
+   Log/Stats/Settings dashboard.
+9. **Test the personal admin login**: from the login screen, click "Admin
+   Login", sign in with username `admin` / password `changeme2026`. **Change
+   this password immediately** from Settings → Personal Admin Login.
+10. **Test campaigns**: after step 7's job was started, go to the chief
+    dashboard's Campaigns tab — a campaign should already exist automatically
+    (e.g. "Flow Test — started [month/year]"), showing that company/division's
+    progress. Start a job under a different company/division for the same
+    activity and confirm it joins the same campaign.
+11. **Test Reports**: browse company/division sub-tabs, click column headers
+    to sort, try "flagged only", then try the Custom CSV Export with a few
+    filters.
 
 ## Next steps (in rough order)
 
