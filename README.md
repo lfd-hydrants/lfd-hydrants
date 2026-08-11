@@ -14,8 +14,24 @@ visibility, stats, and exportable reports/backups.
 
 - ✅ Database schema created (`sql/001_initial_schema.sql`)
 - ✅ Sample/placeholder data for testing (`sql/002_seed_sample_data.sql`)
-- ✅ Working app (`app/index.html`) — login, new test entry, log w/ search+filter,
-  chief stats (incl. overdue retest flags), admin settings, CSV backup export
+- ✅ Session timing model updated to real timestamps (`sql/003_session_start_end_timestamps.sql`)
+- ✅ Jobs vs. shifts model added (`sql/004_jobs_multi_day_tracking.sql`) — a
+  JOB (Company + Division + Activity) can span multiple days/crews until
+  explicitly marked complete; a SHIFT (`sessions` table) is one crew's single
+  day of work on that job, with its own OIC/crew/time tracking
+- ✅ Working app (`app/index.html`) — login, job/shift workflow: pick Company +
+  Division + Activity to resume an in-progress job or start a new one; the
+  hydrant dropdown shows only what's still pending FOR THE WHOLE JOB (not
+  just today's shift), so progress carries forward across days and crews;
+  "End Shift" closes today's work and logs time while leaving the job open
+  for the next crew; an optional checkbox on that same screen can also mark
+  the whole job complete (e.g. all hydrants done, or storm cleanup over) —
+  the next storm then starts a fresh, full list; Edit Shift screen for
+  correcting OIC/crew/date (company/division/activity are fixed to the job);
+  duplicate-test-today warning if another company already tested a hydrant;
+  log w/ search+filter, chief stats (incl. overdue retest flags), admin
+  settings, CSV backup export
+- ✅ Deployed live at `https://lfd-hydrants.vercel.app` (auto-redeploys on GitHub push)
 - ⏳ Real hydrant / member / company CSVs — not loaded yet (using sample data)
 - ⏳ ISO/state fire marshal format — pending chief's input
 - ⏳ Photos — not built yet
@@ -69,13 +85,22 @@ says what it does at a glance. Next ones in line will likely be something like
 1. Open Supabase → your project → **SQL Editor**
 2. Run `sql/001_initial_schema.sql` (creates all tables)
 3. Run `sql/002_seed_sample_data.sql` (adds test companies/hydrants/members)
-4. In Supabase → **Authentication → Providers**, make sure Email is enabled.
-   For quick testing, you can also disable "Confirm email" under Auth settings
-   so test accounts work instantly.
-5. Open `app/index.html` in a browser (just double-click it, or use a local
-   server) — click "Create Account" to make yourself a login, then sign in.
-6. Try logging a test against one of the sample hydrants (H-101, H-102, H-203,
-   H-310), check the Log tab, check Stats, check Admin.
+4. Run `sql/003_session_start_end_timestamps.sql` (real start/end timestamps + session status)
+5. Run `sql/004_jobs_multi_day_tracking.sql` (adds the jobs table for multi-day/multi-crew tracking)
+6. In Supabase → **Authentication → Providers**, make sure Email is enabled.
+   For quick testing, "Confirm email" is currently OFF so accounts work instantly
+   — turn this back on before real department rollout.
+7. Visit the live site: `https://lfd-hydrants.vercel.app` — click "Create Account"
+   to make yourself a login, then sign in.
+8. On the **Session** tab: pick Company, Division, Activity → Continue. Since no
+   job exists yet, this starts a new one — fill in Date/OIC/Crew, Start Shift.
+   Log a couple of sample hydrants (H-101, H-102, H-203, H-310), then click
+   End Shift — leave "job complete" unchecked and confirm. Go back to the
+   Session tab, pick the same Company/Division/Activity again — it should
+   resume the SAME job with the hydrants you already did still excluded
+   from the dropdown. Try ending a shift with "job complete" checked, then
+   start again — the dropdown should show the full list again.
+9. Check the Log tab, Stats tab, and Admin tab.
 
 ## Next steps (in rough order)
 
