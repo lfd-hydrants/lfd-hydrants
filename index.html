@@ -166,59 +166,126 @@ function render(){
 }
 
 // ============================================================
-// SESSION WORKFLOW
-// One "Start Session" screen (filled once), then a repeating
-// hydrant-entry screen ("Save & Continue" loops back to a blank
-// form), then "End Session" with a confirmation step.
-// The active session persists in localStorage so a page refresh
-// mid-session doesn't lose it.
+// SESSION WORKFLOW — Jobs vs. Shifts
+// A JOB is the overall task for one Company + Division + Activity
+// (e.g. "shovel out Engine 4 / Group 1 after this storm") and can
+// span many days and many crews until it's explicitly marked complete.
+// A SHIFT (stored in `sessions`) is one crew's single day of work on
+// that job — its own OIC/crew/start-end time for accurate time tracking.
+// "End Shift" closes today's shift only; the job (and its pending
+// hydrant list) carries forward for the next crew. "Mark Job Complete"
+// closes the whole job — the next storm starts a fresh, full list.
 // ============================================================
 
-let sessionCrew = []; // [{id, name}] while building a new session
+let sessionCrew = []; // [{id, name}] while building/editing a session
+
+function attachDatePicker(id){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.addEventListener('click', ()=>{ if(el.showPicker) el.showPicker(); });
+}
 
 async function renderSessionTab(){
-  const activeId = localStorage.getItem('lfd_active_session_id');
-  if(activeId){
-    const { data, error } = await sb.from('sessions').select('*').eq('id', activeId).single();
+  const cachedId = localStorage.getItem('lfd_active_session_id');
+  if(cachedId){
+    const { data, error } = await sb.from('sessions').select('*').eq('id', cachedId).single();
     if(!error && data && data.status === 'open'){
       state.activeSession = data;
+      const { data: job } = await sb.from('jobs').select('*').eq('id', data.job_id).single();
+      state.activeJob = job || null;
       renderHydrantEntry();
       return;
     }
     localStorage.removeItem('lfd_active_session_id');
   }
-  state.activeSession = null;
-  renderStartSession();
+  renderFindSession();
 }
 
-function renderStartSession(){
+function renderFindSession(){
   const main = document.getElementById('main');
-  sessionCrew = [];
-  const today = new Date().toISOString().slice(0,10);
   main.innerHTML = `
     <div class="card">
-      <h3 style="margin-top:0;">Start Session</h3>
-      <div class="field"><label>Date</label><input type="date" id="f_date" value="${today}"></div>
-      <div class="row2">
-        <div class="field"><label>OIC</label>
-          <select id="f_oic"><option value="">—</option>${state.members.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select>
-        </div>
-        <div class="field"><label>Division</label>
-          <select id="f_division"><option value="">—</option>${state.divisions.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
-        </div>
-      </div>
+      <h3 style="margin-top:0;">Start or Resume a Session</h3>
+      <div class="hint" style="margin-bottom:12px;">Pick Company, Division, and Activity to start today's session, or resume one still in progress. Different activities for the same company/division run as separate sessions — a snow-removal job won't interfere with an in-progress flow test.</div>
       <div class="row2">
         <div class="field"><label>Company</label>
-          <select id="f_company"><option value="">—</option>${state.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+          <select id="find_company"><option value="">—</option>${state.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
         </div>
-        <div class="field"><label>Activity</label>
-          <select id="f_activity">
-            <option value="flow_test">Flow Test</option>
-            <option value="condition_check">Condition Check</option>
-            <option value="snow_removal">Snow Removal</option>
-            <option value="other">Other</option>
-          </select>
+        <div class="field"><label>Division</label>
+          <select id="find_division"><option value="">—</option>${state.divisions.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
         </div>
+      </div>
+      <div class="field"><label>Activity</label>
+        <select id="find_activity">
+          <option value="flow_test">Flow Test</option>
+          <option value="condition_check">Condition Check</option>
+          <option value="snow_removal">Snow Removal</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <button class="primary" id="findBtn">Continue</button>
+    </div>
+  `;
+  document.getElementById('findBtn').onclick = async ()=>{
+    const companyId = document.getElementById('find_company').value;
+    const divisionId = document.getElementById('find_division').value;
+    const activityType = document.getElementById('find_activity').value;
+    if(!companyId || !divisionId){ toast('Select both company and division'); return; }
+
+    const { data: job, error: jobErr } = await sb.from('jobs').select('*')
+      .eq('company_id', companyId).eq('division_id', divisionId)
+      .eq('activity_type', activityType).eq('status', 'open')
+      .order('created_at', { ascending:false }).limit(1).maybeSingle();
+
+    if(jobErr){ toast('Error: ' + jobErr.message); return; }
+
+    if(job){
+      // Job already exists — is there a shift currently open under it (e.g. page refresh)?
+      const { data: openShift } = await sb.from('sessions').select('*')
+        .eq('job_id', job.id).eq('status', 'open')
+        .order('started_at', { ascending:false }).limit(1).maybeSingle();
+
+      if(openShift){
+        state.activeJob = job;
+        state.activeSession = openShift;
+        localStorage.setItem('lfd_active_session_id', openShift.id);
+        toast('Resumed in-progress shift');
+        renderHydrantEntry();
+      } else {
+        // Job open, no shift running right now — start a new shift under it
+        renderStartSession({ companyId, divisionId, activityType, job });
+      }
+    } else {
+      // No open job — this will create both a new job and its first shift
+      renderStartSession({ companyId, divisionId, activityType, job:null });
+    }
+  };
+}
+
+function renderStartSession(prefill, editingSession){
+  const main = document.getElementById('main');
+  const isEdit = !!editingSession;
+  sessionCrew = isEdit
+    ? (editingSession.crew_member_ids || []).map(id => state.members.find(m=>m.id===id)).filter(Boolean).map(m=>({id:m.id, name:m.name}))
+    : [];
+  const today = new Date().toISOString().slice(0,10);
+  const activityLabels = {flow_test:'Flow Test', condition_check:'Condition Check', snow_removal:'Snow Removal', other:'Other'};
+
+  const companyName = isEdit
+    ? state.companies.find(c=>c.id===editingSession.company_id)?.name
+    : state.companies.find(c=>c.id===prefill?.companyId)?.name;
+  const divisionName = isEdit
+    ? state.divisions.find(d=>d.id===editingSession.division_id)?.name
+    : state.divisions.find(d=>d.id===prefill?.divisionId)?.name;
+  const activityType = isEdit ? editingSession.activity_type : prefill?.activityType;
+
+  main.innerHTML = `
+    <div class="card">
+      <h3 style="margin-top:0;">${isEdit ? 'Edit Shift Details' : 'Start Shift'}</h3>
+      <div class="hint" style="margin-bottom:12px;">Job: ${esc(companyName||'—')} · ${esc(divisionName||'—')} · ${esc(activityLabels[activityType]||'—')}${isEdit ? ' <span style="opacity:.7;">(fixed for this job — start a new job from the find screen to change)</span>' : ''}</div>
+      <div class="field"><label>Date</label><input type="date" id="f_date" value="${isEdit ? editingSession.session_date : today}"></div>
+      <div class="field"><label>OIC</label>
+        <select id="f_oic"><option value="">—</option>${state.members.map(m=>`<option value="${m.id}" ${isEdit && editingSession.oic_member_id===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Crew</label>
         <div class="row2">
@@ -227,9 +294,11 @@ function renderStartSession(){
         </div>
         <div id="crewList" style="margin-top:10px;"></div>
       </div>
-      <button class="primary" id="startBtn">Start Session</button>
+      <button class="primary" id="startBtn">${isEdit ? 'Save Changes' : 'Start Shift'}</button>
+      ${isEdit ? '<button class="secondary" id="cancelEditBtn">Cancel</button>' : '<button class="secondary" id="backToFindBtn">← Back</button>'}
     </div>
   `;
+  attachDatePicker('f_date');
 
   function renderCrewList(){
     const list = document.getElementById('crewList');
@@ -263,44 +332,104 @@ function renderStartSession(){
     renderCrewList();
   };
 
+  if(isEdit){
+    document.getElementById('cancelEditBtn').onclick = ()=> renderHydrantEntry();
+  } else {
+    document.getElementById('backToFindBtn').onclick = ()=> renderFindSession();
+  }
+
   document.getElementById('startBtn').onclick = async ()=>{
     const oic = document.getElementById('f_oic').value;
     if(!oic){ toast('Select an OIC'); return; }
-    const { data, error } = await sb.from('sessions').insert({
+
+    const payload = {
       session_date: document.getElementById('f_date').value,
       oic_member_id: oic,
-      division_id: document.getElementById('f_division').value || null,
-      company_id: document.getElementById('f_company').value || null,
-      activity_type: document.getElementById('f_activity').value,
       crew_member_ids: sessionCrew.map(m => m.id),
-      started_at: new Date().toISOString(),
-      status: 'open',
-    }).select().single();
+    };
 
-    if(error){ toast('Error: ' + error.message); return; }
-    localStorage.setItem('lfd_active_session_id', data.id);
-    state.activeSession = data;
-    toast('Session started');
-    renderHydrantEntry();
+    if(isEdit){
+      const { data, error } = await sb.from('sessions').update(payload).eq('id', editingSession.id).select().single();
+      if(error){ toast('Error: ' + error.message); return; }
+      state.activeSession = data;
+      toast('Shift updated');
+      renderHydrantEntry();
+    } else {
+      let job = prefill.job;
+      if(!job){
+        const { data: newJob, error: jobErr } = await sb.from('jobs').insert({
+          company_id: prefill.companyId,
+          division_id: prefill.divisionId,
+          activity_type: prefill.activityType,
+          status: 'open',
+        }).select().single();
+        if(jobErr){ toast('Error: ' + jobErr.message); return; }
+        job = newJob;
+      }
+
+      const { data, error } = await sb.from('sessions').insert({
+        ...payload,
+        job_id: job.id,
+        division_id: prefill.divisionId,
+        company_id: prefill.companyId,
+        activity_type: prefill.activityType,
+        started_at: new Date().toISOString(),
+        status: 'open',
+      }).select().single();
+      if(error){ toast('Error: ' + error.message); return; }
+      localStorage.setItem('lfd_active_session_id', data.id);
+      state.activeJob = job;
+      state.activeSession = data;
+      toast('Shift started');
+      renderHydrantEntry();
+    }
   };
 }
 
-function renderHydrantEntry(){
+async function checkDuplicateToday(hydrantId){
+  if(!hydrantId) return [];
+  const today = new Date().toISOString().slice(0,10);
+  const { data, error } = await sb.from('hydrant_tests')
+    .select('*, sessions(company_id, session_date)')
+    .eq('hydrant_id', hydrantId);
+  if(error || !data) return [];
+  return data.filter(t => t.sessions && t.sessions.session_date === today);
+}
+
+async function renderHydrantEntry(){
   const main = document.getElementById('main');
   const s = state.activeSession;
+  const job = state.activeJob;
   const oicName = state.members.find(m => m.id === s.oic_member_id)?.name || '—';
-  const startedLocal = new Date(s.started_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  const companyName = state.companies.find(c => c.id === job.company_id)?.name || '—';
+  const divisionName = state.divisions.find(d => d.id === job.division_id)?.name || '—';
+  const startedLocal = new Date(s.started_at).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+  const jobStartedLocal = new Date(job.created_at).toLocaleDateString([], {month:'short', day:'numeric'});
+
+  // Pending = this job's company hydrants minus ones completed under ANY shift of this job
+  const { data: jobShifts } = await sb.from('sessions').select('id').eq('job_id', job.id);
+  const shiftIds = (jobShifts || []).map(r => r.id);
+  const { data: doneRows } = await sb.from('hydrant_tests').select('hydrant_id').in('session_id', shiftIds.length ? shiftIds : ['00000000-0000-0000-0000-000000000000']);
+  const doneIds = new Set((doneRows || []).map(r => r.hydrant_id));
+  const companyHydrants = state.hydrants.filter(h => h.company_id === job.company_id);
+  const pending = companyHydrants.filter(h => !doneIds.has(h.id));
+  const completedCount = companyHydrants.length - pending.length;
 
   main.innerHTML = `
     <div class="card" style="background:#f1efe8;">
-      <div style="font-size:13px;"><b>Session in progress</b> — started ${esc(startedLocal)}</div>
-      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">OIC: ${esc(oicName)} · Crew: ${(s.crew_member_ids||[]).length} · ${esc(s.activity_type)}</div>
+      <div style="font-size:13px;"><b>Job:</b> ${esc(companyName)} · ${esc(divisionName)} · ${esc(job.activity_type)} — open since ${esc(jobStartedLocal)}</div>
+      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This shift started ${esc(startedLocal)} · OIC: ${esc(oicName)} · Crew: ${(s.crew_member_ids||[]).length}</div>
+      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">${completedCount} of ${companyHydrants.length} hydrants complete for this job</div>
+      <div style="margin-top:8px;">
+        <button type="button" id="editSessionBtn" style="width:100%;background:#fff;border:1px solid var(--line);border-radius:5px;padding:6px;font-size:12px;font-weight:600;color:var(--steel);cursor:pointer;">Edit This Shift</button>
+      </div>
     </div>
 
     <div class="card">
-      <div class="field"><label>Hydrant Number</label>
-        <select id="f_hydrant"><option value="">Select hydrant…</option>${state.hydrants.map(h=>`<option value="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}</option>`).join('')}</select>
+      <div class="field"><label>Hydrant Number ${pending.length===0 ? '— all done for this job!' : ''}</label>
+        <select id="f_hydrant"><option value="">${pending.length ? 'Select hydrant…' : 'No hydrants remaining'}</option>${pending.map(h=>`<option value="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}</option>`).join('')}</select>
       </div>
+      <div id="dupWarning"></div>
       <div class="row3">
         <div class="field"><label>Static (psi)</label><input type="number" id="f_static"></div>
         <div class="field"><label>Residual (psi)</label><input type="number" id="f_residual"></div>
@@ -326,9 +455,22 @@ function renderHydrantEntry(){
       </div>
       <div class="field"><label>Notes</label><textarea id="f_notes" placeholder="Leaks, missing cap, obstructed, etc."></textarea></div>
       <button class="primary" id="saveBtn">Save &amp; Continue</button>
-      <button class="secondary" id="endBtn" style="border-color:var(--red);color:var(--red-deep);">End Session</button>
+      <button class="secondary" id="endBtn" style="border-color:var(--red);color:var(--red-deep);">End Shift</button>
     </div>
   `;
+
+  document.getElementById('editSessionBtn').onclick = ()=> renderStartSession(null, s);
+
+  document.getElementById('f_hydrant').addEventListener('change', async (e)=>{
+    const dupBox = document.getElementById('dupWarning');
+    dupBox.innerHTML = '';
+    const dups = await checkDuplicateToday(e.target.value);
+    if(dups.length){
+      const d = dups[0];
+      const compName = state.companies.find(c=>c.id === d.sessions?.company_id)?.name || 'another company';
+      dupBox.innerHTML = `<div class="hint" style="background:#f5e9dd;color:var(--warn);border-radius:5px;padding:8px 10px;margin:-4px 0 12px;font-weight:600;">⚠ Already tested today (by ${esc(compName)}) — condition: ${esc(d.condition)}. You can still save if this is a recheck.</div>`;
+    }
+  });
 
   function calc(){
     const P = parseFloat(document.getElementById('f_pitot').value);
@@ -377,10 +519,10 @@ function renderHydrantEntry(){
     renderHydrantEntry();
   };
 
-  document.getElementById('endBtn').onclick = ()=> openEndSessionModal();
+  document.getElementById('endBtn').onclick = ()=> openEndShiftModal();
 }
 
-function openEndSessionModal(){
+function openEndShiftModal(){
   const now = new Date();
   const hh = String(now.getHours()).padStart(2,'0');
   const mm = String(now.getMinutes()).padStart(2,'0');
@@ -388,29 +530,36 @@ function openEndSessionModal(){
   overlay.style = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;';
   overlay.innerHTML = `
     <div class="card" style="max-width:360px;width:100%;margin:0;">
-      <h3 style="margin-top:0;">End Session</h3>
+      <h3 style="margin-top:0;">End Shift</h3>
       <div class="field"><label>Current Time</label><input type="time" id="endTimeInput" value="${hh}:${mm}"></div>
       <div class="field" style="display:flex;align-items:flex-start;gap:8px;">
         <input type="checkbox" id="endConfirmCheck" style="width:auto;margin-top:3px;">
-        <label for="endConfirmCheck" style="text-transform:none;font-weight:400;font-size:13.5px;color:var(--ink);">I confirm all hydrant data for this session has been recorded.</label>
+        <label for="endConfirmCheck" style="text-transform:none;font-weight:400;font-size:13.5px;color:var(--ink);">I confirm all hydrant data for this shift has been recorded.</label>
       </div>
-      <button class="primary" id="confirmEndBtn">Confirm &amp; End Session</button>
+      <div class="field" style="display:flex;align-items:flex-start;gap:8px;background:#f1efe8;border-radius:5px;padding:8px;">
+        <input type="checkbox" id="jobCompleteCheck" style="width:auto;margin-top:3px;">
+        <label for="jobCompleteCheck" style="text-transform:none;font-weight:400;font-size:13.5px;color:var(--ink);">This job is fully complete — no more crews expected (e.g. all hydrants done, or storm cleanup finished). Leave unchecked if another crew will continue this later.</label>
+      </div>
+      <button class="primary" id="confirmEndBtn">Confirm &amp; End Shift</button>
       <button class="secondary" id="cancelEndBtn">Cancel</button>
     </div>
   `;
   document.body.appendChild(overlay);
+  attachDatePicker('endTimeInput');
 
   document.getElementById('cancelEndBtn').onclick = ()=> overlay.remove();
 
   document.getElementById('confirmEndBtn').onclick = async ()=>{
     const checked = document.getElementById('endConfirmCheck').checked;
     if(!checked){ toast('Please confirm all data has been recorded'); return; }
+    const jobComplete = document.getElementById('jobCompleteCheck').checked;
     const timeVal = document.getElementById('endTimeInput').value;
     const [h, m] = timeVal.split(':').map(Number);
     const endedAt = new Date();
     endedAt.setHours(h, m, 0, 0);
 
     const s = state.activeSession;
+    const job = state.activeJob;
     const startedAt = new Date(s.started_at);
     const totalMinutes = Math.max(0, Math.round((endedAt - startedAt) / 60000));
 
@@ -421,11 +570,21 @@ function openEndSessionModal(){
     }).eq('id', s.id);
 
     if(error){ toast('Error: ' + error.message); return; }
+
+    if(jobComplete){
+      const { error: jobErr } = await sb.from('jobs').update({
+        status: 'closed',
+        closed_at: new Date().toISOString(),
+      }).eq('id', job.id);
+      if(jobErr){ toast('Shift saved, but error closing job: ' + jobErr.message); }
+    }
+
     localStorage.removeItem('lfd_active_session_id');
     state.activeSession = null;
+    state.activeJob = null;
     overlay.remove();
-    toast('Session ended');
-    renderStartSession();
+    toast(jobComplete ? 'Shift ended — job marked complete' : 'Shift ended — job still open for the next crew');
+    renderFindSession();
   };
 }
 
