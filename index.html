@@ -28,6 +28,9 @@
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
   button.primary{width:100%;background:var(--red);color:#fff;font-weight:700;padding:13px;border:none;border-radius:6px;font-size:15px;cursor:pointer;}
   button.secondary{width:100%;background:#fff;border:1.5px solid var(--line);color:var(--steel);padding:10px;border-radius:6px;font-weight:600;cursor:pointer;margin-top:8px;}
+  button.small{background:#fff;border:1.5px solid var(--line);color:var(--steel);padding:8px 10px;border-radius:5px;font-weight:600;cursor:pointer;font-size:12.5px;}
+  button.small.danger{border-color:var(--red);color:var(--red-deep);}
+  button.small.ok{border-color:var(--ok);color:var(--ok);}
   .calc-box{background:#f1efe8;border:1px dashed var(--line);border-radius:6px;padding:10px;margin-top:8px;font-size:13.5px;}
   .calc-row{display:flex;justify-content:space-between;padding:3px 0;}
   .calc-row .v{font-family:'Courier New',monospace;font-weight:700;}
@@ -42,10 +45,31 @@
   .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;
     padding:10px 18px;border-radius:20px;font-size:13px;opacity:0;transition:.25s;pointer-events:none;z-index:50;}
   .toast.show{opacity:1;}
-  select[multiple]{height:110px;}
   .login-wrap{max-width:360px;margin:60px auto;padding:20px;}
   .hint{font-size:12px;color:#9a9488;margin-top:6px;}
   .overdue{color:var(--red-deep);font-weight:700;}
+  .choice-btn{display:block;width:100%;text-align:left;background:#fff;border:1.5px solid var(--line);border-radius:6px;
+    padding:14px;margin-bottom:10px;font-size:15px;font-weight:600;color:var(--ink);cursor:pointer;}
+  .choice-btn:active{background:#f1efe8;}
+  .job-row{border:1px solid var(--line);border-radius:6px;padding:12px;margin-bottom:10px;}
+  .job-row .jt{font-weight:700;font-size:14px;}
+  .job-row .jm{font-size:12px;color:var(--steel);margin:3px 0 8px;}
+  .btn-row{display:flex;gap:8px;flex-wrap:wrap;}
+  .btn-row button{flex:1;min-width:100px;}
+  .toggle-group{display:flex;gap:8px;margin-bottom:12px;}
+  .toggle-btn{flex:1;padding:12px 6px;border:1.5px solid var(--line);border-radius:6px;background:#fff;font-weight:700;font-size:13px;color:var(--steel);cursor:pointer;}
+  .toggle-btn.active{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .toggle-btn.active.good{background:var(--ok);border-color:var(--ok);}
+  .toggle-btn.active.warn{background:var(--warn);border-color:var(--warn);}
+  .toggle-btn.active.bad{background:var(--red-deep);border-color:var(--red-deep);}
+  .checklist-row{display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid var(--line);font-size:13.5px;}
+  .checklist-row.done{color:#9a9488;}
+  .checkmark{width:20px;height:20px;border-radius:50%;border:2px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
+  .checkmark.done{background:var(--ok);border-color:var(--ok);color:#fff;}
+  .search-results{max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:5px;margin-top:6px;}
+  .search-result-item{padding:9px 10px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13.5px;}
+  .search-result-item:last-child{border-bottom:none;}
+  .search-result-item:active{background:#f1efe8;}
 </style>
 </head>
 <body>
@@ -69,52 +93,47 @@ function toast(msg){
   setTimeout(()=>t.classList.remove('show'), 1800);
 }
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function attachDatePicker(id){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.addEventListener('click', ()=>{ if(el.showPicker) el.showPicker(); });
+}
+const ACTIVITY_LABELS = {flow_test:'Flow Test', condition_check:'Condition Check', snow_removal:'Snow Removal', other:'Other'};
 
 let state = {
-  user: null,
   tab: 'new',
+  company: null,   // {id, name}
+  division: null,  // {id, name}
   companies: [], divisions: [], members: [], hydrants: [], settings: {},
+  activeJob: null,
+  activeSession: null,
 };
+let sessionCrew = [];
 
 // ============================================================
-// AUTH
+// INIT — anonymous Supabase auth (satisfies RLS) + restore saved
+// company/division from localStorage
 // ============================================================
-async function checkSession(){
-  const { data } = await sb.auth.getSession();
-  state.user = data.session ? data.session.user : null;
+async function init(){
+  const { data: sessionData } = await sb.auth.getSession();
+  if(!sessionData.session){
+    const { error } = await sb.auth.signInAnonymously();
+    if(error){
+      app.innerHTML = '<div class="login-wrap"><div class="card">Connection error: '+esc(error.message)+'</div></div>';
+      return;
+    }
+  }
+  try{
+    const savedCompany = localStorage.getItem('lfd_company');
+    const savedDivision = localStorage.getItem('lfd_division');
+    if(savedCompany) state.company = JSON.parse(savedCompany);
+    if(savedDivision) state.division = JSON.parse(savedDivision);
+  }catch(e){}
+
+  await loadRefData();
   render();
 }
 
-function renderLogin(){
-  app.innerHTML = `
-    <div class="login-wrap">
-      <div class="card">
-        <h2 style="margin-top:0;">LFD Hydrant Testing</h2>
-        <div class="field"><label>Email</label><input id="loginEmail" type="email"></div>
-        <div class="field"><label>Password</label><input id="loginPass" type="password"></div>
-        <button class="primary" id="loginBtn">Sign In</button>
-        <div class="hint">First time? Ask your admin to create your login in Supabase Authentication, or use "Sign Up" below if self-signup is enabled.</div>
-        <button class="secondary" id="signupBtn">Create Account</button>
-      </div>
-    </div>`;
-  document.getElementById('loginBtn').onclick = async ()=>{
-    const email = document.getElementById('loginEmail').value.trim();
-    const password = document.getElementById('loginPass').value;
-    const { error } = await sb.auth.signInWithPassword({ email, password });
-    if(error){ toast(error.message); } else { checkSession(); }
-  };
-  document.getElementById('signupBtn').onclick = async ()=>{
-    const email = document.getElementById('loginEmail').value.trim();
-    const password = document.getElementById('loginPass').value;
-    if(!email || password.length < 6){ toast('Enter email + 6-char password'); return; }
-    const { error } = await sb.auth.signUp({ email, password });
-    if(error){ toast(error.message); } else { toast('Account created — check email if confirmation required'); }
-  };
-}
-
-// ============================================================
-// DATA LOADING
-// ============================================================
 async function loadRefData(){
   const [c, d, m, h, s] = await Promise.all([
     sb.from('companies').select('*').order('name'),
@@ -132,158 +151,295 @@ async function loadRefData(){
 }
 
 // ============================================================
-// SHELL
+// COMPANY LOGIN + DIVISION SELECT
+// ============================================================
+function renderCompanyLogin(){
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="card">
+        <h2 style="margin-top:0;">LFD Hydrant Testing</h2>
+        <div class="field"><label>Company</label>
+          <select id="loginCompany"><option value="">Select…</option>${state.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Password</label><input id="loginPass" type="password"></div>
+        <button class="primary" id="loginBtn">Sign In</button>
+      </div>
+    </div>`;
+  document.getElementById('loginBtn').onclick = ()=>{
+    const companyId = document.getElementById('loginCompany').value;
+    const pass = document.getElementById('loginPass').value;
+    const company = state.companies.find(c => c.id === companyId);
+    if(!company){ toast('Select a company'); return; }
+    if(!pass || pass !== company.access_code){ toast('Incorrect password'); return; }
+    state.company = { id: company.id, name: company.name };
+    localStorage.setItem('lfd_company', JSON.stringify(state.company));
+    render();
+  };
+}
+
+function renderDivisionSelect(){
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="card">
+        <h2 style="margin-top:0;">${esc(state.company.name)}</h2>
+        <div class="hint" style="margin-bottom:12px;">Which division is working today?</div>
+        <div class="field"><label>Division</label>
+          <select id="loginDivision"><option value="">Select…</option>${state.divisions.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
+        </div>
+        <button class="primary" id="divBtn">Continue</button>
+        <button class="secondary" id="switchCoBtn">← Not ${esc(state.company.name)}?</button>
+      </div>
+    </div>`;
+  document.getElementById('divBtn').onclick = ()=>{
+    const divisionId = document.getElementById('loginDivision').value;
+    const division = state.divisions.find(d => d.id === divisionId);
+    if(!division){ toast('Select a division'); return; }
+    state.division = { id: division.id, name: division.name };
+    localStorage.setItem('lfd_division', JSON.stringify(state.division));
+    render();
+  };
+  document.getElementById('switchCoBtn').onclick = ()=>{
+    state.company = null;
+    localStorage.removeItem('lfd_company');
+    render();
+  };
+}
+
+// ============================================================
+// APP SHELL
 // ============================================================
 function render(){
-  if(!state.user){ renderLogin(); return; }
+  if(!state.company){ renderCompanyLogin(); return; }
+  if(!state.division){ renderDivisionSelect(); return; }
+
   app.innerHTML = `
     <header>
       <div>
         <h1>LFD Hydrant Testing</h1>
-        <div class="who">${esc(state.user.email)}</div>
+        <div class="who">${esc(state.company.name)} · ${esc(state.division.name)}</div>
       </div>
-      <button id="signOutBtn">Sign Out</button>
+      <button id="switchBtn">Switch</button>
     </header>
     <div class="tabs">
-      <div class="tab" data-tab="new">Session</div>
+      <div class="tab" data-tab="new">Home</div>
       <div class="tab" data-tab="log">Log</div>
       <div class="tab" data-tab="stats">Stats</div>
       <div class="tab" data-tab="admin">Admin</div>
     </div>
     <main id="main"></main>
   `;
-  document.getElementById('signOutBtn').onclick = async ()=>{ await sb.auth.signOut(); state.user=null; render(); };
+  document.getElementById('switchBtn').onclick = ()=>{
+    state.company = null; state.division = null;
+    localStorage.removeItem('lfd_company'); localStorage.removeItem('lfd_division');
+    localStorage.removeItem('lfd_active_session_id');
+    render();
+  };
   document.querySelectorAll('.tab').forEach(t=>{
     t.classList.toggle('active', t.dataset.tab === state.tab);
     t.onclick = ()=>{ state.tab = t.dataset.tab; render(); };
   });
-  loadRefData().then(()=>{
-    if(state.tab === 'new') renderSessionTab();
-    else if(state.tab === 'log') renderLog();
-    else if(state.tab === 'stats') renderStats();
-    else if(state.tab === 'admin') renderAdmin();
-  });
+
+  if(state.tab === 'new') routeHomeTab();
+  else if(state.tab === 'log') renderLog();
+  else if(state.tab === 'stats') renderStats();
+  else if(state.tab === 'admin') renderAdmin();
 }
 
-// ============================================================
-// SESSION WORKFLOW — Jobs vs. Shifts
-// A JOB is the overall task for one Company + Division + Activity
-// (e.g. "shovel out Engine 4 / Group 1 after this storm") and can
-// span many days and many crews until it's explicitly marked complete.
-// A SHIFT (stored in `sessions`) is one crew's single day of work on
-// that job — its own OIC/crew/start-end time for accurate time tracking.
-// "End Shift" closes today's shift only; the job (and its pending
-// hydrant list) carries forward for the next crew. "Mark Job Complete"
-// closes the whole job — the next storm starts a fresh, full list.
-// ============================================================
-
-let sessionCrew = []; // [{id, name}] while building/editing a session
-
-function attachDatePicker(id){
-  const el = document.getElementById(id);
-  if(!el) return;
-  el.addEventListener('click', ()=>{ if(el.showPicker) el.showPicker(); });
-}
-
-async function renderSessionTab(){
+async function routeHomeTab(){
   const cachedId = localStorage.getItem('lfd_active_session_id');
   if(cachedId){
     const { data, error } = await sb.from('sessions').select('*').eq('id', cachedId).single();
     if(!error && data && data.status === 'open'){
       state.activeSession = data;
       const { data: job } = await sb.from('jobs').select('*').eq('id', data.job_id).single();
-      state.activeJob = job || null;
-      renderHydrantEntry();
-      return;
+      if(job && job.status === 'open'){
+        state.activeJob = job;
+        renderHydrantEntry();
+        return;
+      }
     }
     localStorage.removeItem('lfd_active_session_id');
   }
-  renderFindSession();
+  renderCompanyHome();
 }
 
-function renderFindSession(){
+// ============================================================
+// COMPANY HOME — open jobs, recently closed (reopen), start new, checklist
+// ============================================================
+async function renderCompanyHome(){
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="card">Loading…</div>';
+
+  const fourteenDaysAgo = new Date(Date.now() - 14*24*60*60*1000).toISOString();
+
+  const [{ data: openJobs }, { data: closedJobs }] = await Promise.all([
+    sb.from('jobs').select('*').eq('company_id', state.company.id).eq('division_id', state.division.id).eq('status','open').order('created_at', {ascending:false}),
+    sb.from('jobs').select('*').eq('company_id', state.company.id).eq('division_id', state.division.id).eq('status','closed').gte('closed_at', fourteenDaysAgo).order('closed_at', {ascending:false}),
+  ]);
+
+  // For each open job, find whether it has a currently-open shift, and pending count
+  const jobRows = [];
+  for(const job of (openJobs||[])){
+    const { data: shifts } = await sb.from('sessions').select('*').eq('job_id', job.id).order('started_at', {ascending:false});
+    const openShift = (shifts||[]).find(s => s.status === 'open');
+    const recentClosedShifts = (shifts||[]).filter(s => s.status === 'closed').slice(0,3);
+    const { pending, total, completedCount } = await computeJobPending(job);
+    jobRows.push({ job, openShift, recentClosedShifts, pendingCount: pending.length, total });
+  }
+
+  main.innerHTML = `
+    <div class="card">
+      <h3 style="margin-top:0;">Open Work</h3>
+      ${jobRows.length === 0 ? '<div class="hint">Nothing open right now.</div>' : jobRows.map(r => `
+        <div class="job-row">
+          <div class="jt">${esc(ACTIVITY_LABELS[r.job.activity_type])}</div>
+          <div class="jm">${r.total - r.pendingCount} of ${r.total} hydrants complete · opened ${esc(new Date(r.job.created_at).toLocaleDateString([], {month:'short', day:'numeric'}))}${r.openShift ? ' · shift in progress' : ''}</div>
+          <div class="btn-row">
+            <button class="small" data-resume="${r.job.id}">Resume</button>
+            ${r.openShift ? `<button class="small danger" data-endshift="${r.openShift.id}">End Shift</button>` : ''}
+            <button class="small danger" data-closejob="${r.job.id}">Close Job Permanently</button>
+          </div>
+          ${r.recentClosedShifts.length ? `<div class="hint" style="margin-top:8px;">Recently ended shifts: ${r.recentClosedShifts.map(cs=>`<button class="small ok" data-reopenshift="${cs.id}" style="margin:4px 4px 0 0;">Reopen ${esc(new Date(cs.started_at).toLocaleDateString([], {month:'short', day:'numeric'}))}</button>`).join('')}</div>` : ''}
+        </div>
+      `).join('')}
+    </div>
+
+    <div class="card">
+      <button class="primary" id="startNewBtn">Start New Job</button>
+      <button class="secondary" id="checklistBtn">District Hydrant Checklist</button>
+    </div>
+
+    ${closedJobs && closedJobs.length ? `
+    <div class="card">
+      <h3 style="margin-top:0;">Recently Closed (tap to reopen)</h3>
+      ${closedJobs.map(j => `
+        <div class="job-row">
+          <div class="jt">${esc(ACTIVITY_LABELS[j.activity_type])}</div>
+          <div class="jm">Closed ${esc(new Date(j.closed_at).toLocaleDateString([], {month:'short', day:'numeric'}))}</div>
+          <button class="small ok" data-reopenjob="${j.id}">Reopen Job</button>
+        </div>
+      `).join('')}
+    </div>` : ''}
+  `;
+
+  document.getElementById('startNewBtn').onclick = renderActivityPicker;
+  document.getElementById('checklistBtn').onclick = renderDistrictChecklist;
+
+  main.querySelectorAll('[data-resume]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const jobId = btn.dataset.resume;
+      const { data: job } = await sb.from('jobs').select('*').eq('id', jobId).single();
+      const { data: openShift } = await sb.from('sessions').select('*').eq('job_id', jobId).eq('status','open').maybeSingle();
+      state.activeJob = job;
+      if(openShift){
+        state.activeSession = openShift;
+        localStorage.setItem('lfd_active_session_id', openShift.id);
+        renderHydrantEntry();
+      } else {
+        renderStartShift({ job }, null);
+      }
+    };
+  });
+
+  main.querySelectorAll('[data-endshift]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const sessionId = btn.dataset.endshift;
+      const { data: sessionRow } = await sb.from('sessions').select('*').eq('id', sessionId).single();
+      const { data: job } = await sb.from('jobs').select('*').eq('id', sessionRow.job_id).single();
+      state.activeSession = sessionRow;
+      state.activeJob = job;
+      openEndShiftModal();
+    };
+  });
+
+  main.querySelectorAll('[data-closejob]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      if(!confirm('Close this job permanently? This should only be done when the entire list is finished and no more testing is expected.')) return;
+      const { error } = await sb.from('jobs').update({ status:'closed', closed_at: new Date().toISOString() }).eq('id', btn.dataset.closejob);
+      // also close any open shift under it
+      await sb.from('sessions').update({ status:'closed', ended_at: new Date().toISOString() }).eq('job_id', btn.dataset.closejob).eq('status','open');
+      if(error){ toast('Error: ' + error.message); return; }
+      toast('Job closed permanently');
+      renderCompanyHome();
+    };
+  });
+
+  main.querySelectorAll('[data-reopenshift]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const { error } = await sb.from('sessions').update({ status:'open', ended_at:null }).eq('id', btn.dataset.reopenshift);
+      if(error){ toast('Error: ' + error.message); return; }
+      toast('Shift reopened');
+      renderCompanyHome();
+    };
+  });
+
+  main.querySelectorAll('[data-reopenjob]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const { error } = await sb.from('jobs').update({ status:'open', closed_at:null }).eq('id', btn.dataset.reopenjob);
+      if(error){ toast('Error: ' + error.message); return; }
+      toast('Job reopened');
+      renderCompanyHome();
+    };
+  });
+}
+
+function renderActivityPicker(){
   const main = document.getElementById('main');
   main.innerHTML = `
     <div class="card">
-      <h3 style="margin-top:0;">Start or Resume a Session</h3>
-      <div class="hint" style="margin-bottom:12px;">Pick Company, Division, and Activity to start today's session, or resume one still in progress. Different activities for the same company/division run as separate sessions — a snow-removal job won't interfere with an in-progress flow test.</div>
-      <div class="row2">
-        <div class="field"><label>Company</label>
-          <select id="find_company"><option value="">—</option>${state.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-        </div>
-        <div class="field"><label>Division</label>
-          <select id="find_division"><option value="">—</option>${state.divisions.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
-        </div>
-      </div>
-      <div class="field"><label>Activity</label>
-        <select id="find_activity">
-          <option value="flow_test">Flow Test</option>
-          <option value="condition_check">Condition Check</option>
-          <option value="snow_removal">Snow Removal</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
-      <button class="primary" id="findBtn">Continue</button>
+      <h3 style="margin-top:0;">What kind of job?</h3>
+      <button class="choice-btn" data-activity="flow_test">Flow Test</button>
+      <button class="choice-btn" data-activity="condition_check">Condition Check</button>
+      <button class="choice-btn" data-activity="snow_removal">Snow Removal</button>
+      <button class="choice-btn" data-activity="other">Other</button>
+      <button class="secondary" id="backBtn">← Back</button>
     </div>
   `;
-  document.getElementById('findBtn').onclick = async ()=>{
-    const companyId = document.getElementById('find_company').value;
-    const divisionId = document.getElementById('find_division').value;
-    const activityType = document.getElementById('find_activity').value;
-    if(!companyId || !divisionId){ toast('Select both company and division'); return; }
-
-    const { data: job, error: jobErr } = await sb.from('jobs').select('*')
-      .eq('company_id', companyId).eq('division_id', divisionId)
-      .eq('activity_type', activityType).eq('status', 'open')
-      .order('created_at', { ascending:false }).limit(1).maybeSingle();
-
-    if(jobErr){ toast('Error: ' + jobErr.message); return; }
-
-    if(job){
-      // Job already exists — is there a shift currently open under it (e.g. page refresh)?
-      const { data: openShift } = await sb.from('sessions').select('*')
-        .eq('job_id', job.id).eq('status', 'open')
-        .order('started_at', { ascending:false }).limit(1).maybeSingle();
-
-      if(openShift){
-        state.activeJob = job;
-        state.activeSession = openShift;
-        localStorage.setItem('lfd_active_session_id', openShift.id);
-        toast('Resumed in-progress shift');
-        renderHydrantEntry();
+  main.querySelectorAll('[data-activity]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const activityType = btn.dataset.activity;
+      const { data: existing } = await sb.from('jobs').select('*')
+        .eq('company_id', state.company.id).eq('division_id', state.division.id)
+        .eq('activity_type', activityType).eq('status','open').maybeSingle();
+      if(existing){
+        const { data: openShift } = await sb.from('sessions').select('*').eq('job_id', existing.id).eq('status','open').maybeSingle();
+        state.activeJob = existing;
+        if(openShift){
+          state.activeSession = openShift;
+          localStorage.setItem('lfd_active_session_id', openShift.id);
+          toast('An open job for this already exists — resuming it');
+          renderHydrantEntry();
+        } else {
+          renderStartShift({ job: existing }, null);
+        }
       } else {
-        // Job open, no shift running right now — start a new shift under it
-        renderStartSession({ companyId, divisionId, activityType, job });
+        renderStartShift({ activityType }, null);
       }
-    } else {
-      // No open job — this will create both a new job and its first shift
-      renderStartSession({ companyId, divisionId, activityType, job:null });
-    }
-  };
+    };
+  });
+  document.getElementById('backBtn').onclick = renderCompanyHome;
 }
 
-function renderStartSession(prefill, editingSession){
+// ============================================================
+// START / EDIT SHIFT
+// ============================================================
+function renderStartShift(prefill, editingSession){
   const main = document.getElementById('main');
   const isEdit = !!editingSession;
   sessionCrew = isEdit
     ? (editingSession.crew_member_ids || []).map(id => state.members.find(m=>m.id===id)).filter(Boolean).map(m=>({id:m.id, name:m.name}))
     : [];
   const today = new Date().toISOString().slice(0,10);
-  const activityLabels = {flow_test:'Flow Test', condition_check:'Condition Check', snow_removal:'Snow Removal', other:'Other'};
-
-  const companyName = isEdit
-    ? state.companies.find(c=>c.id===editingSession.company_id)?.name
-    : state.companies.find(c=>c.id===prefill?.companyId)?.name;
-  const divisionName = isEdit
-    ? state.divisions.find(d=>d.id===editingSession.division_id)?.name
-    : state.divisions.find(d=>d.id===prefill?.divisionId)?.name;
-  const activityType = isEdit ? editingSession.activity_type : prefill?.activityType;
+  const activityType = isEdit ? state.activeJob.activity_type : (prefill.job ? prefill.job.activity_type : prefill.activityType);
 
   main.innerHTML = `
     <div class="card">
-      <h3 style="margin-top:0;">${isEdit ? 'Edit Shift Details' : 'Start Shift'}</h3>
-      <div class="hint" style="margin-bottom:12px;">Job: ${esc(companyName||'—')} · ${esc(divisionName||'—')} · ${esc(activityLabels[activityType]||'—')}${isEdit ? ' <span style="opacity:.7;">(fixed for this job — start a new job from the find screen to change)</span>' : ''}</div>
+      <h3 style="margin-top:0;">${isEdit ? 'Edit Shift' : 'Start Shift'}</h3>
+      <div class="hint" style="margin-bottom:12px;">${esc(state.company.name)} · ${esc(ACTIVITY_LABELS[activityType])}</div>
       <div class="field"><label>Date</label><input type="date" id="f_date" value="${isEdit ? editingSession.session_date : today}"></div>
+      <div class="field"><label>Division</label>
+        <select id="f_division">${state.divisions.map(d=>`<option value="${d.id}" ${(isEdit ? editingSession.division_id===d.id : state.division.id===d.id)?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
+      </div>
       <div class="field"><label>OIC</label>
         <select id="f_oic"><option value="">—</option>${state.members.map(m=>`<option value="${m.id}" ${isEdit && editingSession.oic_member_id===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select>
       </div>
@@ -295,17 +451,14 @@ function renderStartSession(prefill, editingSession){
         <div id="crewList" style="margin-top:10px;"></div>
       </div>
       <button class="primary" id="startBtn">${isEdit ? 'Save Changes' : 'Start Shift'}</button>
-      ${isEdit ? '<button class="secondary" id="cancelEditBtn">Cancel</button>' : '<button class="secondary" id="backToFindBtn">← Back</button>'}
+      <button class="secondary" id="backBtn">← Back</button>
     </div>
   `;
   attachDatePicker('f_date');
 
   function renderCrewList(){
     const list = document.getElementById('crewList');
-    if(sessionCrew.length === 0){
-      list.innerHTML = '<div class="hint">No crew added yet.</div>';
-      return;
-    }
+    if(sessionCrew.length === 0){ list.innerHTML = '<div class="hint">No crew added yet.</div>'; return; }
     list.innerHTML = sessionCrew.map(m => `
       <div style="display:flex;justify-content:space-between;align-items:center;background:#f1efe8;border-radius:5px;padding:7px 10px;margin-bottom:6px;font-size:13.5px;">
         <span>${esc(m.name)}</span>
@@ -313,10 +466,7 @@ function renderStartSession(prefill, editingSession){
       </div>
     `).join('');
     list.querySelectorAll('.removeCrewBtn').forEach(btn=>{
-      btn.onclick = ()=>{
-        sessionCrew = sessionCrew.filter(m => m.id !== btn.dataset.id);
-        renderCrewList();
-      };
+      btn.onclick = ()=>{ sessionCrew = sessionCrew.filter(m => m.id !== btn.dataset.id); renderCrewList(); };
     });
   }
   renderCrewList();
@@ -332,18 +482,16 @@ function renderStartSession(prefill, editingSession){
     renderCrewList();
   };
 
-  if(isEdit){
-    document.getElementById('cancelEditBtn').onclick = ()=> renderHydrantEntry();
-  } else {
-    document.getElementById('backToFindBtn').onclick = ()=> renderFindSession();
-  }
+  document.getElementById('backBtn').onclick = ()=> isEdit ? renderHydrantEntry() : renderCompanyHome();
 
   document.getElementById('startBtn').onclick = async ()=>{
     const oic = document.getElementById('f_oic').value;
+    const divisionId = document.getElementById('f_division').value;
     if(!oic){ toast('Select an OIC'); return; }
 
     const payload = {
       session_date: document.getElementById('f_date').value,
+      division_id: divisionId,
       oic_member_id: oic,
       crew_member_ids: sessionCrew.map(m => m.id),
     };
@@ -358,21 +506,19 @@ function renderStartSession(prefill, editingSession){
       let job = prefill.job;
       if(!job){
         const { data: newJob, error: jobErr } = await sb.from('jobs').insert({
-          company_id: prefill.companyId,
-          division_id: prefill.divisionId,
+          company_id: state.company.id,
+          division_id: state.division.id,
           activity_type: prefill.activityType,
           status: 'open',
         }).select().single();
         if(jobErr){ toast('Error: ' + jobErr.message); return; }
         job = newJob;
       }
-
       const { data, error } = await sb.from('sessions').insert({
         ...payload,
+        company_id: state.company.id,
+        activity_type: job.activity_type,
         job_id: job.id,
-        division_id: prefill.divisionId,
-        company_id: prefill.companyId,
-        activity_type: prefill.activityType,
         started_at: new Date().toISOString(),
         status: 'open',
       }).select().single();
@@ -386,61 +532,137 @@ function renderStartSession(prefill, editingSession){
   };
 }
 
-async function checkDuplicateToday(hydrantId){
-  if(!hydrantId) return [];
-  const today = new Date().toISOString().slice(0,10);
-  const { data, error } = await sb.from('hydrant_tests')
-    .select('*, sessions(company_id, session_date)')
-    .eq('hydrant_id', hydrantId);
-  if(error || !data) return [];
-  return data.filter(t => t.sessions && t.sessions.session_date === today);
+// ============================================================
+// HYDRANT ENTRY — dispatches by activity type
+// ============================================================
+let selectedHydrantId = null;
+
+async function computeJobPending(job){
+  const companyDivisionHydrants = state.hydrants.filter(h => h.company_id === job.company_id && h.division_id === job.division_id);
+  const ids = companyDivisionHydrants.map(h=>h.id);
+  if(ids.length === 0) return { pending: [], total: 0, completedCount: 0 };
+  // Check done-ness GLOBALLY by hydrant + activity type (not restricted to this
+  // job's own shifts) — this is what correctly credits a hydrant as done even
+  // if a different crew/company/division logged it (e.g. via manual search).
+  const { data } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, sessions(activity_type)').in('hydrant_id', ids);
+  const cutoff = new Date(job.created_at);
+  const doneIds = new Set((data||[])
+    .filter(r => r.sessions && r.sessions.activity_type === job.activity_type && new Date(r.tested_at) >= cutoff)
+    .map(r=>r.hydrant_id));
+  const pending = companyDivisionHydrants.filter(h => !doneIds.has(h.id));
+  return { pending, total: companyDivisionHydrants.length, completedCount: companyDivisionHydrants.length - pending.length };
+}
+
+function hydrantSearchWidget(onPick){
+  return `
+    <div class="field">
+      <label>Hydrant not on the list? Search all hydrants</label>
+      <input type="text" id="manualSearch" placeholder="Search by number or address…">
+      <div class="search-results" id="manualResults" style="display:none;"></div>
+    </div>
+  `;
+}
+function wireHydrantSearch(afterPick){
+  const input = document.getElementById('manualSearch');
+  const results = document.getElementById('manualResults');
+  input.addEventListener('input', ()=>{
+    const q = input.value.trim().toLowerCase();
+    if(!q){ results.style.display='none'; results.innerHTML=''; return; }
+    const matches = state.hydrants.filter(h =>
+      h.hydrant_number.toLowerCase().includes(q) || (h.address||'').toLowerCase().includes(q)
+    ).slice(0, 8);
+    results.style.display = matches.length ? 'block' : 'none';
+    results.innerHTML = matches.map(h => `<div class="search-result-item" data-id="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}</div>`).join('');
+    results.querySelectorAll('.search-result-item').forEach(el=>{
+      el.onclick = ()=>{
+        selectedHydrantId = el.dataset.id;
+        input.value = matches.find(h=>h.id===el.dataset.id).hydrant_number;
+        results.style.display = 'none';
+        afterPick(selectedHydrantId);
+      };
+    });
+  });
 }
 
 async function renderHydrantEntry(){
-  const main = document.getElementById('main');
   const s = state.activeSession;
   const job = state.activeJob;
+  selectedHydrantId = null;
+  const { pending, total, completedCount } = await computeJobPending(job);
+
+  const main = document.getElementById('main');
   const oicName = state.members.find(m => m.id === s.oic_member_id)?.name || '—';
-  const companyName = state.companies.find(c => c.id === job.company_id)?.name || '—';
-  const divisionName = state.divisions.find(d => d.id === job.division_id)?.name || '—';
+  const divisionName = state.divisions.find(d => d.id === s.division_id)?.name || '—';
   const startedLocal = new Date(s.started_at).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
-  const jobStartedLocal = new Date(job.created_at).toLocaleDateString([], {month:'short', day:'numeric'});
+  const jobOpenedLocal = new Date(job.created_at).toLocaleDateString([], {month:'short', day:'numeric'});
 
-  // Pending = this job's company hydrants minus ones completed under ANY shift of this job
-  const { data: jobShifts } = await sb.from('sessions').select('id').eq('job_id', job.id);
-  const shiftIds = (jobShifts || []).map(r => r.id);
-  const { data: doneRows } = await sb.from('hydrant_tests').select('hydrant_id').in('session_id', shiftIds.length ? shiftIds : ['00000000-0000-0000-0000-000000000000']);
-  const doneIds = new Set((doneRows || []).map(r => r.hydrant_id));
-  const companyHydrants = state.hydrants.filter(h => h.company_id === job.company_id);
-  const pending = companyHydrants.filter(h => !doneIds.has(h.id));
-  const completedCount = companyHydrants.length - pending.length;
-
-  main.innerHTML = `
+  const headerHtml = `
     <div class="card" style="background:#f1efe8;">
-      <div style="font-size:13px;"><b>Job:</b> ${esc(companyName)} · ${esc(divisionName)} · ${esc(job.activity_type)} — open since ${esc(jobStartedLocal)}</div>
-      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This shift started ${esc(startedLocal)} · OIC: ${esc(oicName)} · Crew: ${(s.crew_member_ids||[]).length}</div>
-      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">${completedCount} of ${companyHydrants.length} hydrants complete for this job</div>
-      <div style="margin-top:8px;">
-        <button type="button" id="editSessionBtn" style="width:100%;background:#fff;border:1px solid var(--line);border-radius:5px;padding:6px;font-size:12px;font-weight:600;color:var(--steel);cursor:pointer;">Edit This Shift</button>
+      <div style="font-size:13px;"><b>${esc(state.company.name)} · ${esc(ACTIVITY_LABELS[job.activity_type])}</b> — job open since ${esc(jobOpenedLocal)}</div>
+      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This shift started ${esc(startedLocal)} · OIC: ${esc(oicName)} · Division: ${esc(divisionName)} · Crew: ${(s.crew_member_ids||[]).length}</div>
+      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">${completedCount} of ${total} hydrants complete for this job</div>
+      <div class="btn-row" style="margin-top:8px;">
+        <button type="button" class="small" id="editSessionBtn">Edit Shift</button>
+        <button type="button" class="small danger" id="endBtn">End Shift</button>
       </div>
     </div>
+  `;
 
+  if(job.activity_type === 'snow_removal'){
+    renderSnowRemovalForm(main, headerHtml, pending, s, job);
+  } else if(job.activity_type === 'condition_check'){
+    renderConditionCheckForm(main, headerHtml, pending, s, job);
+  } else {
+    renderFlowTestForm(main, headerHtml, pending, s, job);
+  }
+
+  document.getElementById('editSessionBtn').onclick = ()=> renderStartShift(null, s);
+  document.getElementById('endBtn').onclick = ()=> openEndShiftModal();
+}
+
+async function checkDuplicateToday(hydrantId, activityType){
+  if(!hydrantId) return [];
+  const today = new Date().toISOString().slice(0,10);
+  const { data } = await sb.from('hydrant_tests')
+    .select('*, sessions(company_id, session_date, activity_type)')
+    .eq('hydrant_id', hydrantId);
+  if(!data) return [];
+  return data.filter(t => t.sessions && t.sessions.session_date === today && t.sessions.activity_type === activityType);
+}
+
+function dupWarningHtml(){ return '<div id="dupWarning"></div>'; }
+async function wireDupWarning(hydrantId, activityType){
+  const box = document.getElementById('dupWarning');
+  if(!box) return;
+  box.innerHTML = '';
+  const dups = await checkDuplicateToday(hydrantId, activityType);
+  if(dups.length){
+    const d = dups[0];
+    const compName = state.companies.find(c=>c.id === d.sessions?.company_id)?.name || 'another company';
+    box.innerHTML = `<div class="hint" style="background:#f5e9dd;color:var(--warn);border-radius:5px;padding:8px 10px;margin:-4px 0 12px;font-weight:600;">⚠ Already done today (by ${esc(compName)}). You can still save if this is a recheck.</div>`;
+  }
+}
+
+// ---------- FLOW TEST (full form) ----------
+function renderFlowTestForm(main, headerHtml, pending, s, job){
+  main.innerHTML = headerHtml + `
     <div class="card">
       <div class="field"><label>Hydrant Number ${pending.length===0 ? '— all done for this job!' : ''}</label>
         <select id="f_hydrant"><option value="">${pending.length ? 'Select hydrant…' : 'No hydrants remaining'}</option>${pending.map(h=>`<option value="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}</option>`).join('')}</select>
       </div>
-      <div id="dupWarning"></div>
+      ${hydrantSearchWidget()}
+      ${dupWarningHtml()}
       <div class="row3">
         <div class="field"><label>Static (psi)</label><input type="number" id="f_static"></div>
         <div class="field"><label>Residual (psi)</label><input type="number" id="f_residual"></div>
         <div class="field"><label>Pitot (psi)</label><input type="number" id="f_pitot"></div>
       </div>
       <div class="row3">
-        <div class="field"><label>Outlet Size (in)</label><input type="number" id="f_orifice" placeholder="2.5"></div>
+        <div class="field"><label>Outlet Size (in)</label><input type="number" id="f_orifice" value="2.5"></div>
         <div class="field"><label>Discharge Coef.</label><input type="number" id="f_coeff" value="${state.settings.default_discharge_coeff || '0.9'}"></div>
         <div class="field"><label># Outlets</label><input type="number" id="f_outlets" value="1"></div>
       </div>
-      <div class="calc-box" id="calcBox">
+      <div class="calc-box">
         <div class="calc-row"><span>Flow at test</span><span class="v" id="c_flow">— gpm</span></div>
         <div class="calc-row"><span>% Drop</span><span class="v" id="c_drop">—%</span></div>
         <div class="calc-row"><span>Flow @ 20 psi</span><span class="v" id="c_flow20">— gpm</span></div>
@@ -450,27 +672,16 @@ async function renderHydrantEntry(){
           <select id="f_condition"><option value="good">Good</option><option value="repair">Needs Repair</option><option value="oos">Out of Service</option></select>
         </div>
         <div class="field"><label>Wet / Dry</label>
-          <select id="f_wetdry"><option value="wet">Wet</option><option value="dry">Dry</option></select>
+          <select id="f_wetdry"><option value="dry" selected>Dry</option><option value="wet">Wet</option></select>
         </div>
       </div>
       <div class="field"><label>Notes</label><textarea id="f_notes" placeholder="Leaks, missing cap, obstructed, etc."></textarea></div>
       <button class="primary" id="saveBtn">Save &amp; Continue</button>
-      <button class="secondary" id="endBtn" style="border-color:var(--red);color:var(--red-deep);">End Shift</button>
     </div>
   `;
 
-  document.getElementById('editSessionBtn').onclick = ()=> renderStartSession(null, s);
-
-  document.getElementById('f_hydrant').addEventListener('change', async (e)=>{
-    const dupBox = document.getElementById('dupWarning');
-    dupBox.innerHTML = '';
-    const dups = await checkDuplicateToday(e.target.value);
-    if(dups.length){
-      const d = dups[0];
-      const compName = state.companies.find(c=>c.id === d.sessions?.company_id)?.name || 'another company';
-      dupBox.innerHTML = `<div class="hint" style="background:#f5e9dd;color:var(--warn);border-radius:5px;padding:8px 10px;margin:-4px 0 12px;font-weight:600;">⚠ Already tested today (by ${esc(compName)}) — condition: ${esc(d.condition)}. You can still save if this is a recheck.</div>`;
-    }
-  });
+  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'flow_test'); });
+  wireHydrantSearch((id)=> wireDupWarning(id, 'flow_test'));
 
   function calc(){
     const P = parseFloat(document.getElementById('f_pitot').value);
@@ -493,13 +704,11 @@ async function renderHydrantEntry(){
   });
 
   document.getElementById('saveBtn').onclick = async ()=>{
-    const hydrantId = document.getElementById('f_hydrant').value;
+    const hydrantId = selectedHydrantId || document.getElementById('f_hydrant').value;
     if(!hydrantId){ toast('Select a hydrant'); return; }
     const {flow, drop, flow20} = calc();
-
-    const { error: tErr } = await sb.from('hydrant_tests').insert({
-      session_id: s.id,
-      hydrant_id: hydrantId,
+    const { error } = await sb.from('hydrant_tests').insert({
+      session_id: s.id, hydrant_id: hydrantId,
       static_psi: document.getElementById('f_static').value || null,
       residual_psi: document.getElementById('f_residual').value || null,
       pitot_psi: document.getElementById('f_pitot').value || null,
@@ -513,15 +722,141 @@ async function renderHydrantEntry(){
       wet_dry: document.getElementById('f_wetdry').value,
       notes: document.getElementById('f_notes').value || null,
     });
-
-    if(tErr){ toast('Error: ' + tErr.message); return; }
-    toast('Hydrant saved — ready for next one');
+    if(error){ toast('Error: ' + error.message); return; }
+    toast('Saved — ready for next one');
     renderHydrantEntry();
   };
-
-  document.getElementById('endBtn').onclick = ()=> openEndShiftModal();
 }
 
+// ---------- CONDITION CHECK (simplified) ----------
+function renderConditionCheckForm(main, headerHtml, pending, s, job){
+  let wetDry = 'dry';
+  let condition = null;
+
+  main.innerHTML = headerHtml + `
+    <div class="card">
+      <div class="field"><label>Hydrant Number ${pending.length===0 ? '— all done for this job!' : ''}</label>
+        <select id="f_hydrant"><option value="">${pending.length ? 'Select hydrant…' : 'No hydrants remaining'}</option>${pending.map(h=>`<option value="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}</option>`).join('')}</select>
+      </div>
+      ${hydrantSearchWidget()}
+      ${dupWarningHtml()}
+      <div class="field"><label>Wet / Dry</label>
+        <div class="toggle-group">
+          <button type="button" class="toggle-btn active" data-wetdry="dry">Dry</button>
+          <button type="button" class="toggle-btn" data-wetdry="wet">Wet</button>
+        </div>
+      </div>
+      <div class="field"><label>Condition</label>
+        <div class="toggle-group">
+          <button type="button" class="toggle-btn" data-cond="good">Good</button>
+          <button type="button" class="toggle-btn" data-cond="repair">Needs Repair</button>
+          <button type="button" class="toggle-btn" data-cond="oos">OOS</button>
+        </div>
+      </div>
+      <div class="field" id="notesWrap" style="display:none;"><label>Notes</label><textarea id="f_notes" placeholder="What's wrong?"></textarea></div>
+      <button class="primary" id="saveBtn">Save &amp; Continue</button>
+    </div>
+  `;
+
+  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'condition_check'); });
+  wireHydrantSearch((id)=> wireDupWarning(id, 'condition_check'));
+
+  main.querySelectorAll('[data-wetdry]').forEach(btn=>{
+    btn.onclick = ()=>{
+      wetDry = btn.dataset.wetdry;
+      main.querySelectorAll('[data-wetdry]').forEach(b=>b.classList.toggle('active', b===btn));
+    };
+  });
+  main.querySelectorAll('[data-cond]').forEach(btn=>{
+    btn.onclick = ()=>{
+      condition = btn.dataset.cond;
+      main.querySelectorAll('[data-cond]').forEach(b=>{
+        b.classList.toggle('active', b===btn);
+        b.classList.remove('good','warn','bad');
+      });
+      if(condition==='good') btn.classList.add('good');
+      if(condition==='repair') btn.classList.add('warn');
+      if(condition==='oos') btn.classList.add('bad');
+      document.getElementById('notesWrap').style.display = (condition==='repair'||condition==='oos') ? 'block' : 'none';
+    };
+  });
+
+  document.getElementById('saveBtn').onclick = async ()=>{
+    const hydrantId = selectedHydrantId || document.getElementById('f_hydrant').value;
+    if(!hydrantId){ toast('Select a hydrant'); return; }
+    if(!condition){ toast('Select a condition'); return; }
+    const { error } = await sb.from('hydrant_tests').insert({
+      session_id: s.id, hydrant_id: hydrantId,
+      condition, wet_dry: wetDry,
+      notes: document.getElementById('f_notes') ? (document.getElementById('f_notes').value || null) : null,
+    });
+    if(error){ toast('Error: ' + error.message); return; }
+    toast('Saved — ready for next one');
+    renderHydrantEntry();
+  };
+}
+
+// ---------- SNOW REMOVAL (simplified) ----------
+function renderSnowRemovalForm(main, headerHtml, pending, s, job){
+  let snowStatus = null;
+
+  main.innerHTML = headerHtml + `
+    <div class="card">
+      <div class="field"><label>Hydrant Number ${pending.length===0 ? '— all done for this job!' : ''}</label>
+        <select id="f_hydrant"><option value="">${pending.length ? 'Select hydrant…' : 'No hydrants remaining'}</option>${pending.map(h=>`<option value="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}</option>`).join('')}</select>
+      </div>
+      ${hydrantSearchWidget()}
+      ${dupWarningHtml()}
+      <div class="field"><label>Status</label>
+        <div class="toggle-group">
+          <button type="button" class="toggle-btn" data-snow="cleared">Cleared</button>
+          <button type="button" class="toggle-btn" data-snow="not_cleared">Not Cleared</button>
+        </div>
+        <div class="toggle-group">
+          <button type="button" class="toggle-btn" data-snow="damaged">Damaged</button>
+          <button type="button" class="toggle-btn" data-snow="oos">OOS</button>
+        </div>
+      </div>
+      <div class="field" id="notesWrap" style="display:none;"><label>Notes</label><textarea id="f_notes" placeholder="What's the issue?"></textarea></div>
+      <button class="primary" id="saveBtn">Save &amp; Continue</button>
+    </div>
+  `;
+
+  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'snow_removal'); });
+  wireHydrantSearch((id)=> wireDupWarning(id, 'snow_removal'));
+
+  main.querySelectorAll('[data-snow]').forEach(btn=>{
+    btn.onclick = ()=>{
+      snowStatus = btn.dataset.snow;
+      main.querySelectorAll('[data-snow]').forEach(b=>{
+        b.classList.toggle('active', b===btn);
+        b.classList.remove('good','warn','bad');
+      });
+      if(snowStatus==='cleared') btn.classList.add('good');
+      if(snowStatus==='not_cleared') btn.classList.add('warn');
+      if(snowStatus==='damaged' || snowStatus==='oos') btn.classList.add('bad');
+      document.getElementById('notesWrap').style.display = (snowStatus==='not_cleared'||snowStatus==='damaged') ? 'block' : 'none';
+    };
+  });
+
+  document.getElementById('saveBtn').onclick = async ()=>{
+    const hydrantId = selectedHydrantId || document.getElementById('f_hydrant').value;
+    if(!hydrantId){ toast('Select a hydrant'); return; }
+    if(!snowStatus){ toast('Select a status'); return; }
+    const { error } = await sb.from('hydrant_tests').insert({
+      session_id: s.id, hydrant_id: hydrantId,
+      snow_status: snowStatus,
+      notes: document.getElementById('f_notes') ? (document.getElementById('f_notes').value || null) : null,
+    });
+    if(error){ toast('Error: ' + error.message); return; }
+    toast('Saved — ready for next one');
+    renderHydrantEntry();
+  };
+}
+
+// ============================================================
+// END SHIFT MODAL
+// ============================================================
 function openEndShiftModal(){
   const now = new Date();
   const hh = String(now.getHours()).padStart(2,'0');
@@ -531,14 +866,11 @@ function openEndShiftModal(){
   overlay.innerHTML = `
     <div class="card" style="max-width:360px;width:100%;margin:0;">
       <h3 style="margin-top:0;">End Shift</h3>
+      <div class="hint" style="margin-bottom:10px;">This saves and pauses — the job stays open for the next crew.</div>
       <div class="field"><label>Current Time</label><input type="time" id="endTimeInput" value="${hh}:${mm}"></div>
       <div class="field" style="display:flex;align-items:flex-start;gap:8px;">
         <input type="checkbox" id="endConfirmCheck" style="width:auto;margin-top:3px;">
         <label for="endConfirmCheck" style="text-transform:none;font-weight:400;font-size:13.5px;color:var(--ink);">I confirm all hydrant data for this shift has been recorded.</label>
-      </div>
-      <div class="field" style="display:flex;align-items:flex-start;gap:8px;background:#f1efe8;border-radius:5px;padding:8px;">
-        <input type="checkbox" id="jobCompleteCheck" style="width:auto;margin-top:3px;">
-        <label for="jobCompleteCheck" style="text-transform:none;font-weight:400;font-size:13.5px;color:var(--ink);">This job is fully complete — no more crews expected (e.g. all hydrants done, or storm cleanup finished). Leave unchecked if another crew will continue this later.</label>
       </div>
       <button class="primary" id="confirmEndBtn">Confirm &amp; End Shift</button>
       <button class="secondary" id="cancelEndBtn">Cancel</button>
@@ -546,46 +878,63 @@ function openEndShiftModal(){
   `;
   document.body.appendChild(overlay);
   attachDatePicker('endTimeInput');
-
   document.getElementById('cancelEndBtn').onclick = ()=> overlay.remove();
-
   document.getElementById('confirmEndBtn').onclick = async ()=>{
-    const checked = document.getElementById('endConfirmCheck').checked;
-    if(!checked){ toast('Please confirm all data has been recorded'); return; }
-    const jobComplete = document.getElementById('jobCompleteCheck').checked;
+    if(!document.getElementById('endConfirmCheck').checked){ toast('Please confirm all data has been recorded'); return; }
     const timeVal = document.getElementById('endTimeInput').value;
     const [h, m] = timeVal.split(':').map(Number);
-    const endedAt = new Date();
-    endedAt.setHours(h, m, 0, 0);
-
+    const endedAt = new Date(); endedAt.setHours(h, m, 0, 0);
     const s = state.activeSession;
-    const job = state.activeJob;
     const startedAt = new Date(s.started_at);
     const totalMinutes = Math.max(0, Math.round((endedAt - startedAt) / 60000));
-
-    const { error } = await sb.from('sessions').update({
-      ended_at: endedAt.toISOString(),
-      status: 'closed',
-      total_minutes: totalMinutes,
-    }).eq('id', s.id);
-
+    const { error } = await sb.from('sessions').update({ ended_at: endedAt.toISOString(), status:'closed', total_minutes: totalMinutes }).eq('id', s.id);
     if(error){ toast('Error: ' + error.message); return; }
-
-    if(jobComplete){
-      const { error: jobErr } = await sb.from('jobs').update({
-        status: 'closed',
-        closed_at: new Date().toISOString(),
-      }).eq('id', job.id);
-      if(jobErr){ toast('Shift saved, but error closing job: ' + jobErr.message); }
-    }
-
     localStorage.removeItem('lfd_active_session_id');
-    state.activeSession = null;
-    state.activeJob = null;
+    state.activeSession = null; state.activeJob = null;
     overlay.remove();
-    toast(jobComplete ? 'Shift ended — job marked complete' : 'Shift ended — job still open for the next crew');
-    renderFindSession();
+    toast('Shift ended — job still open for the next crew');
+    renderCompanyHome();
   };
+}
+
+// ============================================================
+// DISTRICT HYDRANT CHECKLIST
+// ============================================================
+async function renderDistrictChecklist(){
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="card">
+      <h3 style="margin-top:0;">District Hydrant Checklist</h3>
+      <div class="field"><label>Activity</label>
+        <select id="chkActivity">
+          <option value="flow_test">Flow Test</option>
+          <option value="condition_check">Condition Check</option>
+          <option value="snow_removal">Snow Removal</option>
+        </select>
+      </div>
+      <div id="chkList">Loading…</div>
+      <button class="secondary" id="backBtn">← Back</button>
+    </div>
+  `;
+  document.getElementById('backBtn').onclick = renderCompanyHome;
+
+  async function load(){
+    const activityType = document.getElementById('chkActivity').value;
+    const { data } = await sb.from('hydrant_tests').select('hydrant_id, sessions(activity_type)');
+    const doneIds = new Set((data||[]).filter(r => r.sessions && r.sessions.activity_type === activityType).map(r=>r.hydrant_id));
+    const sorted = [...state.hydrants].sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
+    document.getElementById('chkList').innerHTML = sorted.map(h => {
+      const compName = state.companies.find(c=>c.id===h.company_id)?.name || '—';
+      const divName = state.divisions.find(d=>d.id===h.division_id)?.name || '—';
+      return `
+      <div class="checklist-row ${doneIds.has(h.id)?'done':''}">
+        <span>${esc(h.hydrant_number)} — ${esc(h.address||'')} <span class="hint" style="display:inline;">(${esc(compName)} · ${esc(divName)})</span></span>
+        <span class="checkmark ${doneIds.has(h.id)?'done':''}">${doneIds.has(h.id)?'✓':''}</span>
+      </div>
+    `;}).join('');
+  }
+  document.getElementById('chkActivity').addEventListener('change', load);
+  load();
 }
 
 // ============================================================
@@ -609,8 +958,7 @@ async function renderLog(){
   `;
 
   async function load(){
-    let query = sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id)').order('tested_at', {ascending:false}).limit(100);
-    const { data, error } = await query;
+    const { data, error } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id)').order('tested_at', {ascending:false}).limit(150);
     if(error){ document.getElementById('logList').innerHTML = 'Error: '+esc(error.message); return; }
 
     const companyFilter = document.getElementById('filt_company').value;
@@ -628,8 +976,9 @@ async function renderLog(){
     document.getElementById('logList').innerHTML = rows.length ? rows.map(r => `
       <div class="entry">
         <div class="entry-top"><span>${esc(r.hydrants?.hydrant_number || '—')} · ${esc(r.hydrants?.address||'')}</span><span>${esc(r.tested_at?.slice(0,10))}</span></div>
-        <span class="tag ${tagClass[r.condition]}">${tagLabel[r.condition]}</span>
-        <div style="margin-top:6px;font-size:13px;">Static ${r.static_psi??'—'} · Residual ${r.residual_psi??'—'} · Flow ${r.flow_gpm??'—'} gpm · @20psi ${r.flow_at_20psi??'—'} gpm</div>
+        ${r.condition ? `<span class="tag ${tagClass[r.condition]}">${tagLabel[r.condition]}</span>` : ''}
+        ${r.snow_status ? `<span class="tag ${r.snow_status==='cleared'?'tag-good':(r.snow_status==='not_cleared'?'tag-repair':'tag-oos')}">${esc(r.snow_status.replace('_',' '))}</span>` : ''}
+        <div style="margin-top:6px;font-size:13px;">${r.static_psi!=null ? `Static ${r.static_psi} · Residual ${r.residual_psi} · Flow ${r.flow_gpm??'—'} gpm · @20psi ${r.flow_at_20psi??'—'} gpm` : (r.wet_dry ? `Wet/Dry: ${esc(r.wet_dry)}` : '')}</div>
         ${r.notes ? `<div style="font-size:12.5px;font-style:italic;color:var(--steel);margin-top:4px;">"${esc(r.notes)}"</div>` : ''}
       </div>
     `).join('') : '<div class="card">No matching entries.</div>';
@@ -640,7 +989,7 @@ async function renderLog(){
 }
 
 // ============================================================
-// STATS (for the chief)
+// STATS
 // ============================================================
 async function renderStats(){
   const main = document.getElementById('main');
@@ -654,11 +1003,9 @@ async function renderStats(){
 
   const t = tests || [], s = sessions || [], h = hydrants || [];
   const totalMinutes = s.reduce((sum,x)=> sum + (x.total_minutes||0), 0);
-  const goodCount = t.filter(x=>x.condition==='good').length;
-  const repairCount = t.filter(x=>x.condition==='repair').length;
-  const oosCount = t.filter(x=>x.condition==='oos').length;
+  const goodCount = t.filter(x=>x.condition==='good' || x.snow_status==='cleared').length;
+  const attentionCount = t.filter(x=>x.condition==='repair'||x.condition==='oos'||x.snow_status==='not_cleared'||x.snow_status==='damaged'||x.snow_status==='oos').length;
 
-  // overdue: hydrants with no test within their retest interval
   const now = new Date();
   const lastTestByHydrant = {};
   t.forEach(x => {
@@ -677,12 +1024,12 @@ async function renderStats(){
   main.innerHTML = `
     <div class="card">
       <div class="stat-grid">
-        <div class="stat"><div class="n">${t.length}</div><div class="l">Tests Logged</div></div>
-        <div class="stat"><div class="n">${s.length}</div><div class="l">Sessions</div></div>
+        <div class="stat"><div class="n">${t.length}</div><div class="l">Entries Logged</div></div>
+        <div class="stat"><div class="n">${s.length}</div><div class="l">Shifts</div></div>
         <div class="stat"><div class="n">${Math.round(totalMinutes/60)}</div><div class="l">Total Hours</div></div>
         <div class="stat"><div class="n overdue">${overdue.length}</div><div class="l">Hydrants Overdue</div></div>
-        <div class="stat"><div class="n">${goodCount}</div><div class="l">Good</div></div>
-        <div class="stat"><div class="n">${repairCount + oosCount}</div><div class="l">Needs Attention</div></div>
+        <div class="stat"><div class="n">${goodCount}</div><div class="l">Good / Cleared</div></div>
+        <div class="stat"><div class="n">${attentionCount}</div><div class="l">Needs Attention</div></div>
       </div>
     </div>
     ${overdue.length ? `<div class="card"><b>Overdue for retest:</b><br>${overdue.map(hy=>esc(hy.hydrant_number)).join(', ')}</div>` : ''}
@@ -690,7 +1037,7 @@ async function renderStats(){
 }
 
 // ============================================================
-// ADMIN (editable settings)
+// ADMIN
 // ============================================================
 function renderAdmin(){
   const main = document.getElementById('main');
@@ -706,11 +1053,19 @@ function renderAdmin(){
       <button class="primary" id="saveSettings">Save Settings</button>
     </div>
     <div class="card">
+      <h3 style="margin-top:0;">Company Login Codes</h3>
+      <div class="hint" style="margin-bottom:10px;">The shared password each company uses to sign in.</div>
+      ${state.companies.map(c => `
+        <div class="field"><label>${esc(c.name)}</label><input type="text" class="companyCodeInput" data-company="${c.id}" value="${esc(c.access_code||'')}"></div>
+      `).join('')}
+      <button class="primary" id="saveCodesBtn">Save Login Codes</button>
+    </div>
+    <div class="card">
       <h3 style="margin-top:0;">Export</h3>
       <button class="secondary" id="exportBtn">Download Full Backup (CSV)</button>
     </div>
     <div class="card">
-      <h3 style="margin-top:0;">Roster (read-only preview — bulk edits via CSV import, coming next)</h3>
+      <h3 style="margin-top:0;">Roster (read-only preview)</h3>
       <div style="font-size:13px;">${state.hydrants.length} hydrants · ${state.members.length} members · ${state.companies.length} companies</div>
     </div>
   `;
@@ -722,11 +1077,21 @@ function renderAdmin(){
     toast('Settings saved');
     loadRefData();
   };
+  document.getElementById('saveCodesBtn').onclick = async ()=>{
+    const updates = Array.from(document.querySelectorAll('.companyCodeInput')).map(input => ({
+      id: input.dataset.company, access_code: input.value
+    }));
+    for(const u of updates){
+      await sb.from('companies').update({ access_code: u.access_code }).eq('id', u.id);
+    }
+    toast('Login codes saved');
+    loadRefData();
+  };
   document.getElementById('exportBtn').onclick = async ()=>{
     const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number,address)');
     if(!data || !data.length){ toast('No data yet'); return; }
-    const headers = ['Hydrant','Address','Date','Static','Residual','Pitot','Flow','Drop%','Flow@20psi','Condition','Notes'];
-    const rows = data.map(r=>[r.hydrants?.hydrant_number, r.hydrants?.address, r.tested_at?.slice(0,10), r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.drop_pct, r.flow_at_20psi, r.condition, r.notes]);
+    const headers = ['Hydrant','Address','Date','Static','Residual','Pitot','Flow','Drop%','Flow@20psi','Condition','SnowStatus','WetDry','Notes'];
+    const rows = data.map(r=>[r.hydrants?.hydrant_number, r.hydrants?.address, r.tested_at?.slice(0,10), r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.drop_pct, r.flow_at_20psi, r.condition, r.snow_status, r.wet_dry, r.notes]);
     const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
     const csv = [headers.join(','), ...rows.map(r=>r.map(esc2).join(','))].join('\n');
     const blob = new Blob([csv], {type:'text/csv'});
@@ -738,11 +1103,7 @@ function renderAdmin(){
   };
 }
 
-checkSession();
-sb.auth.onAuthStateChange((event, session) => {
-  state.user = session ? session.user : null;
-  render();
-});
+init();
 </script>
 </body>
 </html>
