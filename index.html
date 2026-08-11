@@ -151,52 +151,47 @@ async function loadRefData(){
 }
 
 // ============================================================
-// LOGIN
+// LOGIN — single field, no visible sign of admin access. Typing a
+// company name logs in as that company; typing an admin username
+// logs in as that admin. Same form either way.
 // ============================================================
-function renderCompanyLogin(showAdmin){
-  if(showAdmin){
-    app.innerHTML = `
-      <div class="login-wrap"><div class="card">
-        <h2 style="margin-top:0;">Admin Login</h2>
-        <div class="field"><label>Username</label><input id="adminUser" type="text"></div>
-        <div class="field"><label>Password</label><input id="adminPass" type="password"></div>
-        <button class="primary" id="adminLoginBtn">Sign In</button>
-        <button class="secondary" id="backToCompanyBtn">← Company Login</button>
-      </div></div>`;
-    document.getElementById('backToCompanyBtn').onclick = ()=> renderCompanyLogin(false);
-    document.getElementById('adminLoginBtn').onclick = async ()=>{
-      const username = document.getElementById('adminUser').value.trim();
-      const pass = document.getElementById('adminPass').value;
-      const { data } = await sb.from('super_admins').select('*').eq('username', username).maybeSingle();
-      if(!data || data.access_code !== pass){ toast('Incorrect username or password'); return; }
-      state.superAdmin = { username };
-      localStorage.setItem('lfd_super_admin', JSON.stringify(state.superAdmin));
-      render();
-    };
-    return;
-  }
+function renderCompanyLogin(){
   app.innerHTML = `
     <div class="login-wrap">
       <div class="card">
         <h2 style="margin-top:0;">LFD Hydrant Testing</h2>
         <div class="field"><label>Company</label>
-          <select id="loginCompany"><option value="">Select…</option>${state.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+          <input id="loginIdentifier" type="text" list="companyDatalist" autocomplete="off">
+          <datalist id="companyDatalist">${state.companies.map(c=>`<option value="${esc(c.name)}">`).join('')}</datalist>
         </div>
         <div class="field"><label>Password</label><input id="loginPass" type="password"></div>
         <button class="primary" id="loginBtn">Sign In</button>
-        <button class="secondary" id="adminLinkBtn">Admin Login</button>
       </div>
     </div>`;
-  document.getElementById('adminLinkBtn').onclick = ()=> renderCompanyLogin(true);
-  document.getElementById('loginBtn').onclick = ()=>{
-    const companyId = document.getElementById('loginCompany').value;
+
+  document.getElementById('loginBtn').onclick = async ()=>{
+    const idText = document.getElementById('loginIdentifier').value.trim();
     const pass = document.getElementById('loginPass').value;
-    const company = state.companies.find(c => c.id === companyId);
-    if(!company){ toast('Select a company'); return; }
-    if(!pass || pass !== company.access_code){ toast('Incorrect password'); return; }
-    state.company = { id: company.id, name: company.name };
-    localStorage.setItem('lfd_company', JSON.stringify(state.company));
-    render();
+    if(!idText){ toast('Enter a company'); return; }
+
+    const company = state.companies.find(c => c.name.toLowerCase() === idText.toLowerCase());
+    if(company){
+      if(!pass || pass !== company.access_code){ toast('Incorrect password'); return; }
+      state.company = { id: company.id, name: company.name };
+      localStorage.setItem('lfd_company', JSON.stringify(state.company));
+      render();
+      return;
+    }
+
+    const { data: adminRow } = await sb.from('super_admins').select('*').ilike('username', idText).maybeSingle();
+    if(adminRow && pass && adminRow.access_code === pass){
+      state.superAdmin = { username: adminRow.username };
+      localStorage.setItem('lfd_super_admin', JSON.stringify(state.superAdmin));
+      render();
+      return;
+    }
+
+    toast('Incorrect login');
   };
 }
 
@@ -239,7 +234,7 @@ function clearLogin(){
 
 function render(){
   if(state.superAdmin){ state.isChief = true; renderChiefShell(); return; }
-  if(!state.company){ renderCompanyLogin(false); return; }
+  if(!state.company){ renderCompanyLogin(); return; }
   const companyRow = state.companies.find(c => c.id === state.company.id);
   if(companyRow && companyRow.is_chief){ state.isChief = true; renderChiefShell(); return; }
   state.isChief = false;
@@ -1343,10 +1338,6 @@ function renderSettingsTab(){
       <button class="primary" id="saveChiefBtn">Save Chief Access</button>
     </div>
     <div class="card">
-      <h3 style="margin-top:0;">Personal Admin Login</h3>
-      <div id="superAdminList">Loading…</div>
-    </div>
-    <div class="card">
       <h3 style="margin-top:0;">Export</h3>
       <button class="secondary" id="exportBtn">Download Full Backup (CSV)</button>
     </div>
@@ -1385,24 +1376,6 @@ function renderSettingsTab(){
     a.href = url; a.download = 'hydrant-backup-'+new Date().toISOString().slice(0,10)+'.csv';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  };
-
-  loadSuperAdmins();
-}
-
-async function loadSuperAdmins(){
-  const { data } = await sb.from('super_admins').select('*').order('username');
-  const container = document.getElementById('superAdminList');
-  container.innerHTML = (data||[]).map(a => `
-    <div class="field"><label>${esc(a.username)}</label><input type="text" class="superAdminPass" data-id="${a.id}" value="${esc(a.access_code)}"></div>
-  `).join('') + `
-    <button class="primary" id="saveSuperAdminBtn">Save Passwords</button>
-    <div class="hint" style="margin-top:10px;">To add another admin login, contact whoever set up the database (new rows in the super_admins table).</div>
-  `;
-  document.getElementById('saveSuperAdminBtn').onclick = async ()=>{
-    const updates = Array.from(document.querySelectorAll('.superAdminPass')).map(input => ({ id: input.dataset.id, access_code: input.value }));
-    for(const u of updates) await sb.from('super_admins').update({ access_code: u.access_code }).eq('id', u.id);
-    toast('Admin password(s) saved');
   };
 }
 
