@@ -134,6 +134,36 @@ visibility, stats, and exportable reports/backups.
 - ⏳ Role-based permissions (admin vs. field user) — currently all authenticated
   users have full read/write access; needs tightening before real rollout
 
+## Latest build — no new SQL, app-level only
+
+- **Dates display as MM/DD/YYYY** everywhere in the UI (CSV/PDF exports
+  still use YYYY-MM-DD for spreadsheet sortability — flag if you'd rather
+  those match too).
+- **Log tab overhaul**: entries are clickable to reopen an edit form
+  matching their activity type and save changes directly; plain "Wet/Dry:"
+  text replaced with a simple green/red tag scheme (Good/Dry/Cleared =
+  green, everything else = red); status filter now covers every activity
+  type and **defaults to "Needs Attention"** (hides Good/Dry/Cleared).
+- **Stats tab redesigned** around operational/time metrics (This Week/This
+  Month shifts, hours, entries logged, hours by company) since Campaigns
+  and Reports now cover hydrant-condition rollups better than Stats did.
+- **Settings tab flags unsaved changes** — editing a field highlights that
+  card's Save button until it's actually saved.
+- **Campaign Detail shows the full department picture from day one** —
+  every company/division with hydrants for that activity shows up (0% /
+  "not started" if they haven't begun), not just companies already working.
+- **Campaigns list has Year and Activity Type filters.**
+- **Reports tab redesign**: company selector is a wrapped multi-select chip
+  grid (+ "All Companies"), activity type is a chip selector, a **summary
+  card shows first** (counts only) and the full row table only renders once
+  something narrows the scope — so it never becomes an unusable 500-row
+  wall by default. Campaign Detail has a "View in Reports" button that
+  jumps here pre-filtered.
+- **PDF export** added alongside CSV — same filters, formatted/searchable,
+  suitable to hand directly to Water & Sewer (via jsPDF, loaded from CDN).
+- **Settings → Add Company** — create a new company (name + login code +
+  optional chief flag) directly from the app, no SQL needed.
+
 ## Accounts
 
 - **Supabase project**: `byddmktjldogehwhapog` (URL: `https://byddmktjldogehwhapog.supabase.co`)
