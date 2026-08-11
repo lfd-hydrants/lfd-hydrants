@@ -161,9 +161,20 @@ says what it does at a glance. Next ones in line will likely be something like
 ## ⚠️ Before real rollout — change the default admin password
 
 Migration 008 seeds a personal admin login with username `admin` and
-password `changeme2026`. This account can see and edit everything —
-change its password from Settings → Personal Admin Login the moment
-you've confirmed the deploy works, not after.
+password `changeme2026`. This account can see and edit everything.
+
+Login for this account is now intentionally invisible in the UI — there's
+no "Admin Login" button anymore. Typing `admin` into the Company field
+(instead of a real company name) and the matching password signs in as
+this account instead. Since the Settings tab's password-editing UI for
+this account was also removed (by request, to keep it fully hidden), the
+only way to change this password now is directly in Supabase:
+
+```sql
+update super_admins set access_code = 'your-new-password' where username = 'admin';
+```
+
+Do this from the SQL Editor as soon as the deploy is confirmed working.
 
 ## Security note on the company-login model
 
