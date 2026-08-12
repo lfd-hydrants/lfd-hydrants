@@ -136,6 +136,16 @@ visibility, stats, and exportable reports/backups.
 
 ## Latest build (this session) — no new SQL, app-level only
 
+- **New "Status" tab** (chief-level dashboard) — a filtered problem list
+  showing only currently Damaged or Out of Service hydrants, department-
+  wide (wet/dry has no effect on this list, matching the Master Hydrant
+  List's status logic). Each entry shows quick action buttons right on
+  the card: **Set Damaged**, **Set OOS**, or **Mark Repaired** — no need
+  to open the detail view first, though "View History" is still one tap
+  away if needed. Every status change is logged as a new entry (session_id
+  null, a note explaining who/why), preserving full history rather than
+  overwriting anything.
+
 - **Master Hydrant List** (replaces the old "District Hydrant Checklist" —
   same nav entry, same Company/Division/See-All scoping, but now
   color-coded by actual hydrant condition instead of job-completion
@@ -238,6 +248,34 @@ visibility, stats, and exportable reports/backups.
   from suggesting saved logins or offering to remember the password.
   Same searchable dropdown+type behavior as before, just no more
   browser-suggested previous entries.
+
+## Latest build (this session) — no new SQL, app-level only, 2 new files
+
+- **Warn before losing unsaved work** — the three hydrant entry forms and
+  Shift Settings now track unsaved changes and prompt ("You have unsaved
+  changes. Leave without saving?") before navigating away via the top
+  back button, End Shift, switching tabs, or signing out. Also guards
+  against an accidental browser tab close/refresh via `beforeunload`.
+- **Home-screen install (PWA)** — two new files, `manifest.json` and
+  `sw.js` (a minimal pass-through service worker, no offline caching
+  since the app needs a live Supabase connection anyway), plus icon
+  files `icon-192.png` and `icon-512.png`. Opening the site now offers
+  "Add to Home Screen" / "Install" like a real app, with an actual icon
+  — these are simple placeholder icons (dark background, red stripe,
+  "LFD" text) generated for this build; swap them out anytime for a
+  proper department logo by replacing the two PNG files.
+- **Colorblind-safe status indicators** — Good/Damaged/OOS status dots
+  and badges (Master Hydrant List, Hydrant Detail, Status tab) now show
+  a symbol (✓ / ! / ✕) in addition to color, so status doesn't rely on
+  color perception alone.
+- **Date range filter on the Log tab** — From/To date fields alongside
+  the existing Company/Status/Hydrant# filters.
+
+### Deploying this update
+
+Along with replacing `index.html`, this update adds **three new files**
+that must also be uploaded to the repo root (same folder as `index.html`):
+`manifest.json`, `sw.js`, `icon-192.png`, `icon-512.png`.
 
 ## Previous build — no new SQL, app-level only
 
