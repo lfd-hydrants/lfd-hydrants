@@ -25,6 +25,7 @@
   .field{margin-bottom:12px;}
   .field label{display:block;font-size:12px;font-weight:700;text-transform:uppercase;color:var(--steel);margin-bottom:4px;letter-spacing:.03em;}
   input,select,textarea{width:100%;padding:10px;font-size:15px;border:1.5px solid var(--line);border-radius:5px;font-family:inherit;}
+  input:disabled{background:#f1efe8;color:#9a9488;}
   textarea{min-height:60px;}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
@@ -35,6 +36,7 @@
   button.small.danger{border-color:var(--red);color:var(--red-deep);}
   button.small.ok{border-color:var(--ok);color:var(--ok);}
   button.small.neutral{border-color:var(--steel);}
+  .back-bar{margin-bottom:12px;}
   .calc-box{background:#f1efe8;border:1px dashed var(--line);border-radius:6px;padding:10px;margin-top:8px;font-size:13.5px;}
   .calc-row{display:flex;justify-content:space-between;padding:3px 0;}
   .calc-row .v{font-family:'Courier New',monospace;font-weight:700;}
@@ -78,14 +80,11 @@
   .search-result-item:last-child{border-bottom:none;}
   .search-result-item:active{background:#f1efe8;}
   .search-result-item small{display:block;color:#9a9488;font-size:11px;margin-top:1px;}
-  .subtabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:12px;padding-bottom:2px;}
-  .subtab{flex-shrink:0;padding:7px 12px;border-radius:16px;border:1.5px solid var(--line);background:#fff;font-size:12.5px;font-weight:600;color:var(--steel);cursor:pointer;}
-  .subtab.active{background:var(--ink);color:#fff;border-color:var(--ink);}
   .chip-grid{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;}
   .chip{padding:7px 12px;border-radius:16px;border:1.5px solid var(--line);background:#fff;font-size:12.5px;font-weight:600;color:var(--steel);cursor:pointer;}
   .chip.active{background:var(--ink);color:#fff;border-color:var(--ink);}
   table.report{width:100%;border-collapse:collapse;font-size:12.5px;}
-  table.report th{text-align:left;padding:8px 6px;border-bottom:2px solid var(--line);cursor:pointer;white-space:nowrap;color:var(--steel);text-transform:uppercase;font-size:10.5px;}
+  table.report th{text-align:left;padding:8px 6px;border-bottom:2px solid var(--line);white-space:nowrap;color:var(--steel);text-transform:uppercase;font-size:10.5px;}
   table.report td{padding:7px 6px;border-bottom:1px solid var(--line);white-space:nowrap;}
   .progress-bar{background:#e6e3da;border-radius:6px;height:10px;overflow:hidden;margin:6px 0;}
   .progress-bar .fill{background:var(--ok);height:100%;}
@@ -129,6 +128,19 @@ function fmtDateTime(d){
   if(isNaN(date)) return '—';
   return `${fmtDate(date)} ${date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
 }
+function companySortKey(name){
+  const eng = name.match(/^Engine\s+(\d+)/i);
+  if(eng) return [0, parseInt(eng[1])];
+  const lad = name.match(/^Ladder\s+(\d+)/i);
+  if(lad) return [1, parseInt(lad[1])];
+  return [2, name];
+}
+function compareCompanyNames(a,b){
+  const ka=companySortKey(a), kb=companySortKey(b);
+  if(ka[0]!==kb[0]) return ka[0]-kb[0];
+  if(typeof ka[1]==='number' && typeof kb[1]==='number') return ka[1]-kb[1];
+  return String(ka[1]).localeCompare(String(kb[1]));
+}
 const ACTIVITY_LABELS = {flow_test:'Flow Test', condition_check:'Condition Check', snow_removal:'Snow Removal', other:'Other'};
 
 let state = {
@@ -165,37 +177,77 @@ async function loadRefData(){
     sb.from('hydrants').select('*').eq('active', true).order('hydrant_number'),
     sb.from('app_settings').select('*'),
   ]);
-  state.companies = c.data || [];
+  state.companies = (c.data || []).sort((a,b)=>compareCompanyNames(a.name,b.name));
   state.divisions = d.data || [];
   state.members = m.data || [];
   state.hydrants = h.data || [];
   state.settings = {};
   (s.data || []).forEach(row => state.settings[row.key] = row.value);
 }
+function sharedCode(){ return state.settings.shared_company_login_code || 'lfd2026'; }
 
 // ============================================================
-// LOGIN
+// LOGIN — searchable dropdown, no browser autofill memory
 // ============================================================
+function typeaheadHtml(id, placeholder){
+  return `
+    <div style="position:relative;">
+      <input type="text" id="${id}_text" placeholder="${esc(placeholder)}" autocomplete="off">
+      <input type="hidden" id="${id}_value">
+      <div class="search-results" id="${id}_results" style="display:none;position:absolute;left:0;right:0;background:#fff;z-index:5;"></div>
+    </div>`;
+}
+function wireTypeahead(id, items, onSelect){
+  const textInput = document.getElementById(id+'_text');
+  const hiddenInput = document.getElementById(id+'_value');
+  const results = document.getElementById(id+'_results');
+  textInput.addEventListener('focus', ()=>renderList(items));
+  textInput.addEventListener('input', ()=>{
+    hiddenInput.value = '';
+    const q = textInput.value.trim().toLowerCase();
+    renderList(q ? items.filter(m=>m.name.toLowerCase().includes(q)) : items);
+  });
+  document.addEventListener('click', (e)=>{
+    if(!textInput.contains(e.target) && !results.contains(e.target)) results.style.display='none';
+  });
+  function renderList(matches){
+    if(!matches.length){ results.style.display='none'; return; }
+    results.innerHTML = matches.slice(0,30).map(m=>`<div class="search-result-item" data-id="${m.id}">${esc(m.name)}</div>`).join('');
+    results.style.display = 'block';
+    results.querySelectorAll('.search-result-item').forEach(el=>{
+      el.onclick = ()=>{
+        const m = items.find(x=>x.id===el.dataset.id);
+        textInput.value = m.name; hiddenInput.value = m.id;
+        results.style.display = 'none';
+        if(onSelect) onSelect(m);
+      };
+    });
+  }
+}
+
 function renderCompanyLogin(){
   app.innerHTML = `
     <div class="login-wrap">
       <div class="card">
         <h2 style="margin-top:0;">LFD Hydrant Testing</h2>
-        <div class="field"><label>Company</label>
-          <input id="loginIdentifier" type="text" list="companyDatalist" autocomplete="off">
-          <datalist id="companyDatalist">${state.companies.map(c=>`<option value="${esc(c.name)}">`).join('')}</datalist>
-        </div>
-        <div class="field"><label>Password</label><input id="loginPass" type="password"></div>
+        <div class="field"><label>Company</label>${typeaheadHtml('loginCompany', 'Type or select…')}</div>
+        <div class="field"><label>Password</label><input id="loginPass" type="password" autocomplete="off"></div>
         <button class="primary" id="loginBtn">Sign In</button>
       </div>
     </div>`;
+  wireTypeahead('loginCompany', state.companies);
   document.getElementById('loginBtn').onclick = async ()=>{
-    const idText = document.getElementById('loginIdentifier').value.trim();
+    const idFromClick = document.getElementById('loginCompany_value').value;
+    const idText = document.getElementById('loginCompany_text').value.trim();
     const pass = document.getElementById('loginPass').value;
     if(!idText){ toast('Enter a company'); return; }
-    const company = state.companies.find(c => c.name.toLowerCase() === idText.toLowerCase());
+
+    const company = idFromClick
+      ? state.companies.find(c => c.id === idFromClick)
+      : state.companies.find(c => c.name.toLowerCase() === idText.toLowerCase());
     if(company){
-      if(!pass || pass !== company.access_code){ toast('Incorrect password'); return; }
+      const expected = company.is_chief ? company.access_code : sharedCode();
+      if(!pass || pass !== expected){ toast('Incorrect password'); return; }
       state.company = { id: company.id, name: company.name };
       localStorage.setItem('lfd_company', JSON.stringify(state.company));
       render();
@@ -247,6 +299,9 @@ function clearLogin(){
   state.company = null; state.division = null; state.superAdmin = null; state.isChief = false;
   localStorage.removeItem('lfd_company'); localStorage.removeItem('lfd_division');
   localStorage.removeItem('lfd_super_admin'); localStorage.removeItem('lfd_active_session_id');
+}
+function backBar(label, id){
+  return `<div class="back-bar"><button class="small neutral" id="${id}">← ${esc(label)}</button></div>`;
 }
 
 function render(){
@@ -321,43 +376,7 @@ async function routeHomeTab(){
   renderCompanyHome();
 }
 
-// ============================================================
-// TYPEAHEAD
-// ============================================================
-function typeaheadHtml(id, placeholder){
-  return `
-    <div style="position:relative;">
-      <input type="text" id="${id}_text" placeholder="${esc(placeholder)}" autocomplete="off">
-      <input type="hidden" id="${id}_value">
-      <div class="search-results" id="${id}_results" style="display:none;position:absolute;left:0;right:0;background:#fff;z-index:5;"></div>
-    </div>`;
-}
-function wireTypeahead(id, items, onSelect){
-  const textInput = document.getElementById(id+'_text');
-  const hiddenInput = document.getElementById(id+'_value');
-  const results = document.getElementById(id+'_results');
-  textInput.addEventListener('focus', ()=>renderList(items));
-  textInput.addEventListener('input', ()=>{
-    const q = textInput.value.trim().toLowerCase();
-    renderList(q ? items.filter(m=>m.name.toLowerCase().includes(q)) : items);
-  });
-  document.addEventListener('click', (e)=>{
-    if(!textInput.contains(e.target) && !results.contains(e.target)) results.style.display='none';
-  });
-  function renderList(matches){
-    if(!matches.length){ results.style.display='none'; return; }
-    results.innerHTML = matches.slice(0,30).map(m=>`<div class="search-result-item" data-id="${m.id}">${esc(m.name)}</div>`).join('');
-    results.style.display = 'block';
-    results.querySelectorAll('.search-result-item').forEach(el=>{
-      el.onclick = ()=>{
-        const m = items.find(x=>x.id===el.dataset.id);
-        textInput.value = m.name; hiddenInput.value = m.id;
-        results.style.display = 'none';
-        if(onSelect) onSelect(m);
-      };
-    });
-  }
-}
+function memberTypeaheadHtml(id, placeholder){ return typeaheadHtml(id, placeholder); }
 
 // ============================================================
 // COMPLETION HELPERS
@@ -433,7 +452,7 @@ async function renderCompanyHome(){
   `;
 
   document.getElementById('startNewBtn').onclick = renderActivityPicker;
-  document.getElementById('checklistBtn').onclick = renderDistrictChecklist;
+  document.getElementById('checklistBtn').onclick = ()=> renderDistrictChecklist({ backTo: renderCompanyHome, isChief:false });
 
   main.querySelectorAll('[data-resume]').forEach(btn=>{
     btn.onclick = async ()=>{
@@ -481,15 +500,15 @@ async function renderCompanyHome(){
 
 function renderActivityPicker(){
   const main = document.getElementById('main');
-  main.innerHTML = `
+  main.innerHTML = backBar('Home', 'topBackBtn') + `
     <div class="card">
       <h3 style="margin-top:0;">What kind of job?</h3>
       <button class="choice-btn" data-activity="flow_test">Flow Test</button>
       <button class="choice-btn" data-activity="condition_check">Condition Check</button>
       <button class="choice-btn" data-activity="snow_removal">Snow Removal</button>
       <button class="choice-btn" data-activity="other">Other</button>
-      <button class="secondary" id="backBtn">← Back</button>
     </div>`;
+  document.getElementById('topBackBtn').onclick = renderCompanyHome;
   main.querySelectorAll('[data-activity]').forEach(btn=>{
     btn.onclick = async ()=>{
       const activityType = btn.dataset.activity;
@@ -508,7 +527,6 @@ function renderActivityPicker(){
       } else { renderStartShift({ activityType }, null); }
     };
   });
-  document.getElementById('backBtn').onclick = renderCompanyHome;
 }
 
 async function getOrCreateCampaign(activityType){
@@ -534,7 +552,7 @@ function renderStartShift(prefill, editingSession){
   const today = new Date().toISOString().slice(0,10);
   const activityType = isEdit ? state.activeJob.activity_type : (prefill.job ? prefill.job.activity_type : prefill.activityType);
 
-  main.innerHTML = `
+  main.innerHTML = backBar(isEdit ? 'Back to Job' : 'Home', 'topBackBtn') + `
     <div class="card">
       <h3 style="margin-top:0;">${isEdit ? 'Shift Settings' : 'Start Shift'}</h3>
       <div class="hint" style="margin-bottom:12px;">${esc(state.company.name)} · ${esc(ACTIVITY_LABELS[activityType])}</div>
@@ -542,18 +560,18 @@ function renderStartShift(prefill, editingSession){
       <div class="field"><label>Division</label>
         <select id="f_division">${state.divisions.map(d=>`<option value="${d.id}" ${(isEdit ? editingSession.division_id===d.id : state.division.id===d.id)?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
       </div>
-      <div class="field"><label>OIC</label>${typeaheadHtml('f_oic', 'Type a name…')}</div>
+      <div class="field"><label>OIC</label>${memberTypeaheadHtml('f_oic', 'Type a name…')}</div>
       <div class="field"><label>Crew</label>
         <div class="row2">
-          <div>${typeaheadHtml('f_crew_pick', 'Type a name…')}</div>
+          <div>${memberTypeaheadHtml('f_crew_pick', 'Type a name…')}</div>
           <button type="button" class="secondary" id="addCrewBtn" style="margin-top:0;">Add</button>
         </div>
         <div id="crewList" style="margin-top:10px;"></div>
       </div>
       <button class="primary" id="startBtn">${isEdit ? 'Save Changes' : 'Start Shift'}</button>
-      <button class="secondary" id="backBtn">← Back</button>
     </div>`;
   attachDatePicker('f_date');
+  document.getElementById('topBackBtn').onclick = ()=> isEdit ? renderHydrantEntry() : renderCompanyHome();
 
   wireTypeahead('f_oic', state.members);
   if(isEdit && editingSession.oic_member_id){
@@ -586,8 +604,6 @@ function renderStartShift(prefill, editingSession){
     document.getElementById('f_crew_pick_value').value = '';
     renderCrewList();
   };
-
-  document.getElementById('backBtn').onclick = ()=> isEdit ? renderHydrantEntry() : renderCompanyHome();
 
   document.getElementById('startBtn').onclick = async ()=>{
     const oic = document.getElementById('f_oic_value').value;
@@ -690,7 +706,7 @@ async function renderHydrantEntry(){
   const oicName = state.members.find(m => m.id === s.oic_member_id)?.name || '—';
   const divisionName = state.divisions.find(d => d.id === s.division_id)?.name || '—';
 
-  const headerHtml = `
+  const headerHtml = backBar('Home', 'topBackBtn') + `
     <div class="card" style="background:#f1efe8;">
       <div style="font-size:13px;"><b>${esc(state.company.name)} · ${esc(ACTIVITY_LABELS[job.activity_type])}</b> — job open since ${fmtDate(job.created_at)}</div>
       <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This shift started ${fmtDateTime(s.started_at)} · OIC: ${esc(oicName)} · Division: ${esc(divisionName)} · Crew: ${(s.crew_member_ids||[]).length}</div>
@@ -705,6 +721,7 @@ async function renderHydrantEntry(){
   else if(job.activity_type === 'condition_check') renderConditionCheckForm(main, headerHtml, pending, s, job);
   else renderFlowTestForm(main, headerHtml, pending, s, job);
 
+  document.getElementById('topBackBtn').onclick = renderCompanyHome;
   document.getElementById('editSessionBtn').onclick = ()=> renderStartShift(null, s);
   document.getElementById('endBtn').onclick = ()=> openEndShiftModal();
 }
@@ -967,26 +984,48 @@ function openEndShiftModal(){
 }
 
 // ============================================================
-// DISTRICT CHECKLIST
+// DISTRICT CHECKLIST — scoped by default, dropdowns to widen, "See All"
 // ============================================================
-async function renderDistrictChecklist(){
+async function renderDistrictChecklist(opts){
+  const isChief = !!opts.isChief;
+  let selCompany = isChief ? '' : state.company.id;
+  let selDivision = isChief ? '' : state.division.id;
   const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="card">
-      <h3 style="margin-top:0;">District Hydrant Checklist</h3>
-      <div class="field"><label>Activity</label>
-        <select id="chkActivity"><option value="flow_test">Flow Test</option><option value="condition_check">Condition Check</option><option value="snow_removal">Snow Removal</option></select>
-      </div>
-      <div id="chkList">Loading…</div>
-      <button class="secondary" id="backBtn">← Back</button>
-    </div>`;
-  document.getElementById('backBtn').onclick = renderCompanyHome;
+
+  function render(){
+    main.innerHTML = backBar('Back', 'topBackBtn') + `
+      <div class="card">
+        <h3 style="margin-top:0;">District Hydrant Checklist</h3>
+        <div class="row2">
+          <div class="field"><label>Company</label>
+            <select id="chkCompany"><option value="">All Companies</option>${state.companies.map(c=>`<option value="${c.id}" ${selCompany===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Division</label>
+            <select id="chkDivision"><option value="">All Divisions</option>${state.divisions.map(d=>`<option value="${d.id}" ${selDivision===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="field"><label>Activity</label>
+          <select id="chkActivity"><option value="flow_test">Flow Test</option><option value="condition_check">Condition Check</option><option value="snow_removal">Snow Removal</option></select>
+        </div>
+        <button class="secondary" id="seeAllBtn">See All Hydrants (Citywide)</button>
+        <div id="chkList" style="margin-top:10px;">Loading…</div>
+      </div>`;
+    document.getElementById('topBackBtn').onclick = opts.backTo;
+    document.getElementById('chkCompany').addEventListener('change', (e)=>{ selCompany = e.target.value; load(); });
+    document.getElementById('chkDivision').addEventListener('change', (e)=>{ selDivision = e.target.value; load(); });
+    document.getElementById('chkActivity').addEventListener('change', load);
+    document.getElementById('seeAllBtn').onclick = ()=>{ selCompany=''; selDivision=''; render(); };
+    load();
+  }
 
   async function load(){
     const activityType = document.getElementById('chkActivity').value;
     const { data } = await sb.from('hydrant_tests').select('hydrant_id, sessions(activity_type)');
     const doneIds = new Set((data||[]).filter(r => r.sessions && r.sessions.activity_type === activityType).map(r=>r.hydrant_id));
-    const sorted = [...state.hydrants].sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
+    let hydrants = state.hydrants;
+    if(selCompany) hydrants = hydrants.filter(h=>h.company_id===selCompany);
+    if(selDivision) hydrants = hydrants.filter(h=>h.division_id===selDivision);
+    const sorted = [...hydrants].sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
     document.getElementById('chkList').innerHTML = sorted.map(h => {
       const compName = state.companies.find(c=>c.id===h.company_id)?.name || '—';
       const divName = state.divisions.find(d=>d.id===h.division_id)?.name || '—';
@@ -994,14 +1033,13 @@ async function renderDistrictChecklist(){
         <span>${esc(h.hydrant_number)} — ${esc(h.address||'')} <span class="hint" style="display:inline;">(${esc(compName)} · ${esc(divName)})</span></span>
         <span class="checkmark ${doneIds.has(h.id)?'done':''}">${doneIds.has(h.id)?'✓':''}</span>
       </div>`;
-    }).join('');
+    }).join('') || '<div class="hint">No hydrants match.</div>';
   }
-  document.getElementById('chkActivity').addEventListener('change', load);
-  load();
+  render();
 }
 
 // ============================================================
-// LOG — clickable entries, colored tags, smart default filter
+// LOG — clickable entries, colored tags, smart default filter, repair action
 // ============================================================
 function isAttentionRow(r){
   return r.condition === 'repair' || r.condition === 'oos' || r.wet_dry === 'wet' ||
@@ -1075,6 +1113,7 @@ async function openEditLogEntryModal(entryId, onSaved){
   const { data: row } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number,address), sessions(activity_type)').eq('id', entryId).single();
   if(!row){ toast('Entry not found'); return; }
   const activityType = row.sessions?.activity_type || 'flow_test';
+  const isBad = row.condition === 'repair' || row.condition === 'oos' || row.snow_condition_flag || row.snow_cleared_status === 'not_cleared';
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
 
@@ -1142,6 +1181,7 @@ async function openEditLogEntryModal(entryId, onSaved){
       <div class="hint" style="margin-bottom:10px;">${esc(row.hydrants?.address||'')} · ${esc(ACTIVITY_LABELS[activityType])} · ${fmtDate(row.tested_at)}</div>
       ${bodyHtml}
       <button class="primary" id="saveEditBtn">Save Changes</button>
+      ${isBad ? '<button class="secondary" id="markRepairedBtn" style="border-color:var(--ok);color:var(--ok);">Mark Repaired — Back In Service</button>' : ''}
       <button class="secondary" id="cancelEditBtn">Cancel</button>
     </div>`;
   document.body.appendChild(overlay);
@@ -1204,11 +1244,27 @@ async function openEditLogEntryModal(entryId, onSaved){
     overlay.remove();
     if(onSaved) onSaved();
   };
+
+  const repairBtn = document.getElementById('markRepairedBtn');
+  if(repairBtn) repairBtn.onclick = async ()=>{
+    let repairPayload = { hydrant_id: row.hydrant_id, session_id: null, notes: 'Marked repaired / back in service' };
+    if(activityType === 'snow_removal'){
+      repairPayload.snow_cleared_status = 'cleared'; repairPayload.snow_condition_flag = null;
+    } else {
+      repairPayload.condition = 'good'; repairPayload.wet_dry = row.wet_dry || null;
+    }
+    const { error } = await sb.from('hydrant_tests').insert(repairPayload);
+    if(error){ toast('Error: ' + error.message); return; }
+    toast('Marked repaired — new entry logged');
+    overlay.remove();
+    if(onSaved) onSaved();
+  };
 }
 
 // ============================================================
-// STATS — operational/time focus (Campaigns/Reports cover condition rollups)
+// STATS — operational/time focus + overdue PDF
 // ============================================================
+let lastOverdueList = [];
 async function renderStats(){
   const main = document.getElementById('main');
   main.innerHTML = 'Loading…';
@@ -1242,8 +1298,8 @@ async function renderStats(){
     const dueDate = new Date(last); dueDate.setMonth(dueDate.getMonth() + months);
     return dueDate < now;
   });
+  lastOverdueList = overdue;
 
-  // Hours by company (this month)
   const hoursByCompany = {};
   monthShifts.forEach(sess => {
     const name = state.companies.find(c=>c.id===sess.company_id)?.name || 'Unknown';
@@ -1274,20 +1330,56 @@ async function renderStats(){
       <h3 style="margin-top:0;">Hours by Company (this month)</h3>
       ${hoursRows.length ? `<table class="report"><thead><tr><th>Company</th><th>Hours</th></tr></thead><tbody>${hoursRows.map(([name,mins])=>`<tr><td>${esc(name)}</td><td>${(mins/60).toFixed(1)}</td></tr>`).join('')}</tbody></table>` : '<div class="hint">No shifts logged this month yet.</div>'}
     </div>
-    ${overdue.length ? `<div class="card"><b>Overdue for retest:</b><br>${overdue.map(hy=>esc(hy.hydrant_number)).join(', ')}</div>` : ''}
+    ${overdue.length ? `<div class="card"><b>Overdue for retest:</b><br>${overdue.map(hy=>esc(hy.hydrant_number)).join(', ')}<button class="secondary" id="overduePdfBtn" style="margin-top:10px;">Download Overdue List (PDF)</button></div>` : ''}
   `;
+  const pdfBtn = document.getElementById('overduePdfBtn');
+  if(pdfBtn) pdfBtn.onclick = ()=>{
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(16); doc.text('Overdue Hydrants for Retest', 14, 16);
+    doc.setFontSize(10); doc.text('Generated ' + fmtDate(new Date()), 14, 23);
+    const body = lastOverdueList.map(hy => [hy.hydrant_number, hy.address||'', state.companies.find(c=>c.id===hy.company_id)?.name || '']);
+    doc.autoTable({ head: [['Hydrant','Address','Company']], body, startY: 28, styles:{fontSize:9}, headStyles:{fillColor:[26,26,26]} });
+    doc.save('overdue-hydrants-'+new Date().toISOString().slice(0,10)+'.pdf');
+    toast('PDF downloaded');
+  };
 }
 
 // ============================================================
-// CHIEF: CAMPAIGNS (with year/activity filters)
+// CHIEF: CAMPAIGNS (with year/activity filters, %/flag counts, close)
 // ============================================================
 let campaignYearFilter = '';
 let campaignActivityFilter = '';
+
+async function closeCampaignWithComputedEndDate(campaignId){
+  const { data: campaign } = await sb.from('campaigns').select('*').eq('id', campaignId).single();
+  const cutoff = new Date(campaign.created_at);
+  const { data: tests } = await sb.from('hydrant_tests').select('tested_at, sessions(activity_type)');
+  const relevant = (tests||[]).filter(t => t.sessions && t.sessions.activity_type === campaign.activity_type && new Date(t.tested_at) >= cutoff);
+  let endDate = new Date().toISOString();
+  if(relevant.length){
+    endDate = relevant.reduce((max,t)=> new Date(t.tested_at) > new Date(max) ? t.tested_at : max, relevant[0].tested_at);
+  }
+  await sb.from('campaigns').update({ status:'closed', closed_at: endDate }).eq('id', campaignId);
+}
+
+async function computeCampaignQuickStats(campaign, allTests){
+  const cutoff = new Date(campaign.created_at);
+  const eligibleCompanyIds = (campaign.company_ids && campaign.company_ids.length) ? new Set(campaign.company_ids) : null;
+  const totalHydrants = state.hydrants.filter(h => h.company_id && h.division_id && (!eligibleCompanyIds || eligibleCompanyIds.has(h.company_id))).length;
+  const relevant = allTests.filter(t => t.sessions && t.sessions.activity_type === campaign.activity_type && new Date(t.tested_at) >= cutoff);
+  const doneIds = new Set(relevant.map(t=>t.hydrant_id));
+  const pct = totalHydrants ? Math.round(doneIds.size / totalHydrants * 100) : 0;
+  const damaged = relevant.filter(t=>t.snow_condition_flag==='damaged').length;
+  const oos = relevant.filter(t=>t.condition==='oos' || t.snow_condition_flag==='oos').length;
+  return { pct, damaged, oos };
+}
 
 async function renderCampaignsTab(){
   const main = document.getElementById('main');
   main.innerHTML = '<div class="card">Loading…</div>';
   const { data: campaigns } = await sb.from('campaigns').select('*').order('created_at', {ascending:false});
+  const { data: allTests } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, condition, snow_condition_flag, sessions(activity_type)');
   const all = campaigns || [];
   const years = [...new Set(all.map(c => new Date(c.created_at).getFullYear()))].sort((a,b)=>b-a);
 
@@ -1298,6 +1390,9 @@ async function renderCampaignsTab(){
   const open = filtered.filter(c=>c.status==='open');
   const closed = filtered.filter(c=>c.status==='closed');
 
+  const openStats = {};
+  for(const c of open) openStats[c.id] = await computeCampaignQuickStats(c, allTests||[]);
+
   main.innerHTML = `
     <div class="card">
       <div class="row2">
@@ -1306,11 +1401,19 @@ async function renderCampaignsTab(){
       </div>
     </div>
     <div class="card"><h3 style="margin-top:0;">Open Campaigns</h3>
-      ${open.length===0 ? '<div class="hint">None open right now.</div>' : open.map(c=>`
-        <div class="job-row" data-campaign="${c.id}" style="cursor:pointer;">
-          <div class="jt">${esc(c.name)}</div>
-          <div class="jm">${esc(ACTIVITY_LABELS[c.activity_type])} · started ${fmtDate(c.created_at)}</div>
-        </div>`).join('')}
+      ${open.length===0 ? '<div class="hint">None open right now.</div>' : open.map(c=>{
+        const st = openStats[c.id] || {pct:0,damaged:0,oos:0};
+        return `
+        <div class="job-row">
+          <div data-campaign="${c.id}" style="cursor:pointer;">
+            <div class="jt">${esc(c.name)}</div>
+            <div class="jm">${esc(ACTIVITY_LABELS[c.activity_type])} · started ${fmtDate(c.created_at)}</div>
+            <div class="progress-bar"><div class="fill" style="width:${st.pct}%;"></div></div>
+            <div style="font-size:13px;font-weight:600;">${st.pct}% complete · Damaged – ${st.damaged}, OOS – ${st.oos}</div>
+          </div>
+          <button class="small danger" style="width:100%;margin-top:8px;" data-quickclose="${c.id}">Close Campaign</button>
+        </div>`;
+      }).join('')}
     </div>
     <div class="card"><h3 style="margin-top:0;">Closed Campaigns</h3>
       ${closed.length===0 ? '<div class="hint">None yet.</div>' : closed.map(c=>`
@@ -1323,6 +1426,15 @@ async function renderCampaignsTab(){
   document.getElementById('yearFilter').addEventListener('change', (e)=>{ campaignYearFilter = e.target.value; renderCampaignsTab(); });
   document.getElementById('activityFilter').addEventListener('change', (e)=>{ campaignActivityFilter = e.target.value; renderCampaignsTab(); });
   main.querySelectorAll('[data-campaign]').forEach(row=>{ row.onclick = ()=> renderCampaignDetail(row.dataset.campaign); });
+  main.querySelectorAll('[data-quickclose]').forEach(btn=>{
+    btn.onclick = async (e)=>{
+      e.stopPropagation();
+      if(!confirm('Close this campaign? End date will be set to the last actual hydrant entry.')) return;
+      await closeCampaignWithComputedEndDate(btn.dataset.quickclose);
+      toast('Campaign closed');
+      renderCampaignsTab();
+    };
+  });
 }
 
 async function renderCampaignDetail(campaignId){
@@ -1331,11 +1443,12 @@ async function renderCampaignDetail(campaignId){
   const { data: campaign } = await sb.from('campaigns').select('*').eq('id', campaignId).single();
   const { data: jobs } = await sb.from('jobs').select('*').eq('campaign_id', campaignId);
   const cutoff = new Date(campaign.created_at);
+  const eligibleCompanyIds = (campaign.company_ids && campaign.company_ids.length) ? new Set(campaign.company_ids) : null;
 
-  // Every company/division pair with hydrants — not just ones that have started
   const pairsMap = new Map();
   state.hydrants.forEach(h => {
     if(!h.company_id || !h.division_id) return;
+    if(eligibleCompanyIds && !eligibleCompanyIds.has(h.company_id)) return;
     const key = h.company_id + '|' + h.division_id;
     if(!pairsMap.has(key)) pairsMap.set(key, { companyId: h.company_id, divisionId: h.division_id });
   });
@@ -1343,14 +1456,14 @@ async function renderCampaignDetail(campaignId){
   let totalHydrants = 0, totalDone = 0;
   const rows = [];
   for(const { companyId, divisionId } of pairsMap.values()){
-    const { pending, total, completedCount } = await computeCompletionForCompanyDivision(companyId, divisionId, campaign.activity_type, cutoff);
+    const { total, completedCount } = await computeCompletionForCompanyDivision(companyId, divisionId, campaign.activity_type, cutoff);
     totalHydrants += total; totalDone += completedCount;
     const job = (jobs||[]).find(j => j.company_id === companyId && j.division_id === divisionId);
     const compName = state.companies.find(c=>c.id===companyId)?.name || '—';
     const divName = state.divisions.find(d=>d.id===divisionId)?.name || '—';
     rows.push({ compName, divName, total, completedCount, pct: total ? Math.round(completedCount/total*100) : 0, status: job ? job.status : 'not started' });
   }
-  rows.sort((a,b)=> a.compName.localeCompare(b.compName) || a.divName.localeCompare(b.divName));
+  rows.sort((a,b)=> compareCompanyNames(a.compName,b.compName) || a.divName.localeCompare(b.divName));
   const overallPct = totalHydrants ? Math.round(totalDone/totalHydrants*100) : 0;
 
   const jobIds = (jobs||[]).map(j=>j.id);
@@ -1360,17 +1473,17 @@ async function renderCampaignDetail(campaignId){
   const { data: recentTests } = sIds.length ? await sb.from('hydrant_tests').select('hydrant_id, tested_at').in('session_id', sIds).gte('tested_at', sevenDaysAgo) : { data: [] };
   const thisWeekCount = new Set((recentTests||[]).map(r=>r.hydrant_id)).size;
 
-  main.innerHTML = `
+  main.innerHTML = backBar('All Campaigns', 'topBackBtn') + `
     <div class="card">
       <h3 style="margin-top:0;">${esc(campaign.name)}</h3>
-      <div class="hint">${esc(ACTIVITY_LABELS[campaign.activity_type])} · ${campaign.status === 'open' ? 'Open' : 'Closed'} · started ${fmtDate(campaign.created_at)}</div>
+      <div class="hint">${esc(ACTIVITY_LABELS[campaign.activity_type])} · ${campaign.status === 'open' ? 'Open' : 'Closed ' + fmtDate(campaign.closed_at)} · started ${fmtDate(campaign.created_at)}</div>
       <div class="progress-bar"><div class="fill" style="width:${overallPct}%;"></div></div>
       <div style="font-size:14px;font-weight:700;">${overallPct}% complete (${totalDone} of ${totalHydrants} hydrants) · ${thisWeekCount} tested this week</div>
       <div class="btn-row" style="margin-top:10px;">
         <button class="small" id="renameBtn">Rename</button>
         ${campaign.status==='open' ? '<button class="small danger" id="closeCampBtn">Close Campaign</button>' : '<button class="small ok" id="reopenCampBtn">Reopen Campaign</button>'}
-        <button class="small neutral" id="viewReportBtn">View in Reports</button>
-        <button class="small neutral" id="backBtn">← Back</button>
+        <button class="small neutral" id="exportCsvBtn">Export CSV</button>
+        <button class="small neutral" id="exportPdfBtn">Export PDF</button>
       </div>
     </div>
     <div class="card">
@@ -1379,13 +1492,7 @@ async function renderCampaignDetail(campaignId){
       <tbody>${rows.map(r=>`<tr><td>${esc(r.compName)}</td><td>${esc(r.divName)}</td><td>${r.completedCount}/${r.total}</td><td>${r.pct}%</td><td>${esc(r.status)}</td></tr>`).join('')}</tbody></table>
     </div>`;
 
-  document.getElementById('backBtn').onclick = renderCampaignsTab;
-  document.getElementById('viewReportBtn').onclick = ()=>{
-    reportActivityFilter = campaign.activity_type;
-    reportSelectedCompanyIds = new Set(rows.map(r => state.companies.find(c=>c.name===r.compName)?.id).filter(Boolean));
-    state.tab = 'reports';
-    renderChiefShell();
-  };
+  document.getElementById('topBackBtn').onclick = renderCampaignsTab;
   document.getElementById('renameBtn').onclick = async ()=>{
     const newName = prompt('Campaign name:', campaign.name);
     if(newName && newName.trim()){
@@ -1395,8 +1502,8 @@ async function renderCampaignDetail(campaignId){
   };
   const closeBtn = document.getElementById('closeCampBtn');
   if(closeBtn) closeBtn.onclick = async ()=>{
-    if(!confirm('Close this campaign?')) return;
-    await sb.from('campaigns').update({ status:'closed', closed_at: new Date().toISOString() }).eq('id', campaignId);
+    if(!confirm('Close this campaign? End date will be set to the last actual hydrant entry.')) return;
+    await closeCampaignWithComputedEndDate(campaignId);
     renderCampaignDetail(campaignId);
   };
   const reopenBtn = document.getElementById('reopenCampBtn');
@@ -1404,14 +1511,53 @@ async function renderCampaignDetail(campaignId){
     await sb.from('campaigns').update({ status:'open', closed_at:null }).eq('id', campaignId);
     renderCampaignDetail(campaignId);
   };
+
+  async function getCampaignScopedRows(){
+    const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, division_id), sessions(activity_type, tested_at)');
+    return (data||[]).filter(r => r.sessions && r.sessions.activity_type === campaign.activity_type && new Date(r.tested_at) >= cutoff
+      && (!eligibleCompanyIds || eligibleCompanyIds.has(r.hydrants?.company_id)));
+  }
+  document.getElementById('exportCsvBtn').onclick = async ()=>{
+    const rows = await getCampaignScopedRows();
+    if(!rows.length){ toast('No data to export'); return; }
+    const headers = ['Hydrant','Address','Company','Division','Date','Static','Residual','Pitot','Flow','Condition','SnowCleared','SnowFlag','WetDry','Notes'];
+    const out = rows.map(r => {
+      const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
+      const divName = state.divisions.find(d=>d.id===r.hydrants?.division_id)?.name || '';
+      return [r.hydrants?.hydrant_number, r.hydrants?.address, compName, divName, fmtDate(r.tested_at), r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.condition, r.snow_cleared_status, r.snow_condition_flag, r.wet_dry, r.notes];
+    });
+    const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    const csv = [headers.join(','), ...out.map(r=>r.map(esc2).join(','))].join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'campaign-'+campaignId.slice(0,8)+'.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+  document.getElementById('exportPdfBtn').onclick = async ()=>{
+    const rows = await getCampaignScopedRows();
+    if(!rows.length){ toast('No data to export'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'landscape' });
+    doc.setFontSize(16); doc.text(campaign.name, 14, 16);
+    doc.setFontSize(10); doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' records', 14, 23);
+    const headers = ['Hydrant','Address','Company','Division','Date','Condition','Wet/Dry','Notes'];
+    const body = rows.map(r => {
+      const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
+      const divName = state.divisions.find(d=>d.id===r.hydrants?.division_id)?.name || '';
+      const cond = r.condition || r.snow_cleared_status || '';
+      return [r.hydrants?.hydrant_number||'', r.hydrants?.address||'', compName, divName, fmtDate(r.tested_at), cond, r.wet_dry||'', r.notes||''];
+    });
+    doc.autoTable({ head: [headers], body, startY: 28, styles:{fontSize:8}, headStyles:{fillColor:[26,26,26]} });
+    doc.save('campaign-'+campaignId.slice(0,8)+'.pdf');
+    toast('PDF downloaded');
+  };
 }
 
 // ============================================================
-// CHIEF: REPORTS
+// CHIEF: REPORTS — filter-and-export only, no browsable table
 // ============================================================
-let reportSort = { field: 'hydrant_number', dir: 'asc' };
 let reportFlaggedOnly = false;
-let reportSelectedCompanyIds = new Set(); // empty = all companies
+let reportSelectedCompanyIds = new Set();
 let reportActivityFilter = 'flow_test';
 
 async function renderReportsTab(){
@@ -1430,9 +1576,9 @@ async function renderReportsTab(){
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-top:4px;">
         <input type="checkbox" id="flaggedOnly" style="width:auto;" ${reportFlaggedOnly?'checked':''}> Flagged only
       </label>
+      <button class="secondary" id="checklistBtnChief" style="margin-top:10px;">District Hydrant Checklist</button>
     </div>
     <div class="card" id="reportSummary">Loading…</div>
-    <div class="card" style="overflow-x:auto;display:none;" id="reportTableCard"><div id="reportTable"></div></div>
     <div class="card">
       <h3 style="margin-top:0;">Custom Export</h3>
       <div class="row2">
@@ -1448,25 +1594,21 @@ async function renderReportsTab(){
     </div>`;
   attachDatePicker('csv_from'); attachDatePicker('csv_to');
 
-  main.querySelectorAll('[data-all]').forEach(el=>{
-    el.onclick = ()=>{ reportSelectedCompanyIds = new Set(); renderReportsTab(); };
-  });
+  main.querySelectorAll('[data-all]').forEach(el=>{ el.onclick = ()=>{ reportSelectedCompanyIds = new Set(); renderReportsTab(); }; });
   main.querySelectorAll('[data-company]').forEach(el=>{
     el.onclick = ()=>{
       const id = el.dataset.company;
-      if(reportSelectedCompanyIds.has(id)) reportSelectedCompanyIds.delete(id);
-      else reportSelectedCompanyIds.add(id);
+      if(reportSelectedCompanyIds.has(id)) reportSelectedCompanyIds.delete(id); else reportSelectedCompanyIds.add(id);
       renderReportsTab();
     };
   });
-  main.querySelectorAll('[data-activity]').forEach(el=>{
-    el.onclick = ()=>{ reportActivityFilter = el.dataset.activity; renderReportsTab(); };
-  });
-  document.getElementById('flaggedOnly').addEventListener('change', (e)=>{ reportFlaggedOnly = e.target.checked; loadReportData(); });
+  main.querySelectorAll('[data-activity]').forEach(el=>{ el.onclick = ()=>{ reportActivityFilter = el.dataset.activity; renderReportsTab(); }; });
+  document.getElementById('flaggedOnly').addEventListener('change', (e)=>{ reportFlaggedOnly = e.target.checked; loadReportSummary(); });
   document.getElementById('csvExportBtn').onclick = generateCustomCsv;
   document.getElementById('pdfExportBtn').onclick = generateCustomPdf;
+  document.getElementById('checklistBtnChief').onclick = ()=> renderDistrictChecklist({ backTo: ()=>{ state.tab='reports'; renderChiefShell(); }, isChief:true });
 
-  loadReportData();
+  loadReportSummary();
 }
 
 function getReportHydrants(){
@@ -1475,12 +1617,9 @@ function getReportHydrants(){
   return hydrants;
 }
 
-async function loadReportData(){
+async function loadReportSummary(){
   const summaryEl = document.getElementById('reportSummary');
-  const tableCard = document.getElementById('reportTableCard');
   summaryEl.innerHTML = 'Loading…';
-  tableCard.style.display = 'none';
-
   const hydrants = getReportHydrants();
   const ids = hydrants.map(h=>h.id);
   const { data: tests } = ids.length ? await sb.from('hydrant_tests').select('*, sessions(activity_type)').in('hydrant_id', ids) : { data: [] };
@@ -1490,21 +1629,15 @@ async function loadReportData(){
 
   let rows = hydrants.map(h => {
     const t = latestByHydrant[h.id];
-    const divName = state.divisions.find(d=>d.id===h.division_id)?.name || '—';
-    const compName = state.companies.find(c=>c.id===h.company_id)?.name || '—';
     const flagged = t && (t.condition==='repair' || t.condition==='oos' || t.snow_condition_flag || t.snow_cleared_status==='not_cleared' || t.wet_dry==='wet');
-    return {
-      hydrant_number: h.hydrant_number, address: h.address||'', company: compName, division: divName,
-      condition: t?.condition || (t?.snow_cleared_status || ''), wet_dry: t?.wet_dry || '',
-      flag: t?.snow_condition_flag || '', flow: t?.flow_gpm ?? '', static_psi: t?.static_psi ?? '',
-      residual: t?.residual_psi ?? '', last_tested: t?.tested_at ? fmtDate(t.tested_at) : 'Never',
-      flagged, wet: t?.wet_dry === 'wet',
-    };
+    return { flagged, wet: t?.wet_dry === 'wet', neverTested: !t };
   });
+  if(reportFlaggedOnly) rows = rows.filter(r => r.flagged);
+
   const totalCount = rows.length;
   const flaggedCount = rows.filter(r=>r.flagged).length;
   const wetCount = rows.filter(r=>r.wet).length;
-  const neverTested = rows.filter(r=>r.last_tested==='Never').length;
+  const neverTested = rows.filter(r=>r.neverTested).length;
 
   summaryEl.innerHTML = `
     <h3 style="margin-top:0;">Summary — ${esc(ACTIVITY_LABELS[reportActivityFilter])}</h3>
@@ -1514,47 +1647,15 @@ async function loadReportData(){
       <div class="stat"><div class="n">${wetCount}</div><div class="l">Wet</div></div>
       <div class="stat"><div class="n">${neverTested}</div><div class="l">Never Tested</div></div>
     </div>
+    <div class="hint" style="margin-top:10px;">Use Custom Export below to generate the full CSV or PDF for this scope.</div>
   `;
-
-  if(reportFlaggedOnly) rows = rows.filter(r => r.flagged);
-  const showTable = reportFlaggedOnly || reportSelectedCompanyIds.size > 0 || rows.length <= 150;
-  if(!showTable){
-    summaryEl.innerHTML += `<div class="hint" style="margin-top:10px;">Select specific companies or "Flagged only" to see the row-by-row table — use Export below for the complete list.</div>`;
-    return;
-  }
-
-  rows.sort((a,b)=>{
-    const av = a[reportSort.field], bv = b[reportSort.field];
-    const cmp = String(av).localeCompare(String(bv), undefined, {numeric:true});
-    return reportSort.dir === 'asc' ? cmp : -cmp;
-  });
-
-  const cols = reportActivityFilter === 'flow_test'
-    ? [['hydrant_number','Hydrant'],['address','Address'],['company','Company'],['division','Division'],['condition','Condition'],['wet_dry','Wet/Dry'],['flow','Flow'],['static_psi','Static'],['residual','Residual'],['last_tested','Last Tested']]
-    : [['hydrant_number','Hydrant'],['address','Address'],['company','Company'],['division','Division'],['condition','Status'],['flag','Flag'],['last_tested','Last Tested']];
-
-  tableCard.style.display = 'block';
-  document.getElementById('reportTable').innerHTML = `
-    <table class="report"><thead><tr>${cols.map(([f,l])=>`<th data-sort="${f}">${esc(l)}${reportSort.field===f ? (reportSort.dir==='asc'?' ▲':' ▼') : ''}</th>`).join('')}</tr></thead>
-    <tbody>${rows.map(r=>`<tr>${cols.map(([f])=>`<td>${esc(r[f])}</td>`).join('')}</tr>`).join('')}</tbody></table>
-    ${rows.length===0 ? '<div class="hint">No hydrants match.</div>' : ''}
-  `;
-  document.querySelectorAll('[data-sort]').forEach(th=>{
-    th.onclick = ()=>{
-      if(reportSort.field === th.dataset.sort) reportSort.dir = reportSort.dir === 'asc' ? 'desc' : 'asc';
-      else { reportSort.field = th.dataset.sort; reportSort.dir = 'asc'; }
-      loadReportData();
-    };
-  });
-}
-
-function getFilteredExportRows(){
-  return { from: document.getElementById('csv_from').value, to: document.getElementById('csv_to').value,
-    wetDry: document.getElementById('csv_wetdry').value, status: document.getElementById('csv_status').value };
 }
 
 async function fetchExportRows(){
-  const { from, to, wetDry, status } = getFilteredExportRows();
+  const from = document.getElementById('csv_from').value;
+  const to = document.getElementById('csv_to').value;
+  const wetDry = document.getElementById('csv_wetdry').value;
+  const status = document.getElementById('csv_status').value;
   const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, division_id), sessions(activity_type, session_date, company_id, division_id)');
   let rows = data || [];
   if(from) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) >= from);
@@ -1597,7 +1698,6 @@ async function generateCustomPdf(){
   doc.text('Lynn Fire Department — Hydrant Report', 14, 16);
   doc.setFontSize(10);
   doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' records', 14, 23);
-
   const headers = ['Hydrant','Address','Company','Division','Activity','Date','Condition','Wet/Dry','Flow (gpm)','Notes'];
   const body = rows.map(r => {
     const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
@@ -1612,13 +1712,14 @@ async function generateCustomPdf(){
 }
 
 // ============================================================
-// CHIEF: SETTINGS (with unsaved-changes indicators + add company)
+// CHIEF: SETTINGS
 // ============================================================
 function markDirty(btnId){ const b = document.getElementById(btnId); if(b) b.classList.add('unsaved'); }
 function clearDirty(btnId){ const b = document.getElementById(btnId); if(b) b.classList.remove('unsaved'); }
 
 function renderSettingsTab(){
   const main = document.getElementById('main');
+  const chiefCompanies = state.companies.filter(c=>c.is_chief);
   main.innerHTML = `
     <div class="card">
       <h3 style="margin-top:0;">Testing Settings</h3>
@@ -1627,10 +1728,16 @@ function renderSettingsTab(){
       <button class="primary" id="saveSettings">Save Settings</button>
     </div>
     <div class="card">
-      <h3 style="margin-top:0;">Company Login Codes</h3>
-      <div class="hint" style="margin-bottom:10px;">The shared password each company uses to sign in.</div>
-      ${state.companies.map(c => `<div class="field"><label>${esc(c.name)}${c.is_chief?' (Chief)':''}</label><input type="text" class="companyCodeInput" data-company="${c.id}" value="${esc(c.access_code||'')}"></div>`).join('')}
-      <button class="primary" id="saveCodesBtn">Save Login Codes</button>
+      <h3 style="margin-top:0;">Company Login Code</h3>
+      <div class="hint" style="margin-bottom:10px;">Shared password used by every non-chief company to sign in.</div>
+      <div class="field"><input type="text" id="sharedCodeInput" value="${esc(sharedCode())}"></div>
+      <button class="primary" id="saveSharedCodeBtn">Save Login Code</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Chief Login Codes</h3>
+      <div class="hint" style="margin-bottom:10px;">Each chief-level login has its own individual password.</div>
+      ${chiefCompanies.map(c => `<div class="field"><label>${esc(c.name)}</label><input type="text" class="companyCodeInput" data-company="${c.id}" value="${esc(c.access_code||'')}"></div>`).join('') || '<div class="hint">No chief-level companies yet.</div>'}
+      <button class="primary" id="saveCodesBtn">Save Chief Codes</button>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Chief-Level Access</h3>
@@ -1641,9 +1748,24 @@ function renderSettingsTab(){
     <div class="card">
       <h3 style="margin-top:0;">Add Company</h3>
       <div class="field"><label>Name</label><input type="text" id="newCompanyName" placeholder="e.g. EMS 1"></div>
-      <div class="field"><label>Login Code</label><input type="text" id="newCompanyCode" placeholder="Shared password"></div>
       <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:10px;"><input type="checkbox" id="newCompanyChief" style="width:auto;"> Chief-level access</label>
+      <div class="field"><label>Login Code</label><input type="text" id="newCompanyCode" value="${esc(sharedCode())}" disabled></div>
       <button class="primary" id="addCompanyBtn">Add Company</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Create Campaign</h3>
+      <div class="hint" style="margin-bottom:10px;">Manually pre-create a campaign instead of waiting for the first company to start one.</div>
+      <div class="field"><label>Name (optional — auto-generated if blank)</label><input type="text" id="newCampaignName"></div>
+      <div class="field"><label>Activity</label>
+        <select id="newCampaignActivity"><option value="flow_test">Flow Test</option><option value="condition_check">Condition Check</option><option value="snow_removal">Snow Removal</option></select>
+      </div>
+      <div class="field"><label>Companies (defaults to all)</label>
+        <div class="chip-grid" id="newCampaignCompanies">
+          <div class="chip active" data-camp-all="1">All Companies</div>
+          ${state.companies.map(c=>`<div class="chip active" data-camp-company="${c.id}">${esc(c.name)}</div>`).join('')}
+        </div>
+      </div>
+      <button class="primary" id="createCampaignBtn">Create Campaign</button>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Export</h3>
@@ -1655,6 +1777,7 @@ function renderSettingsTab(){
     </div>`;
 
   document.querySelectorAll('#s_retest, #s_coeff').forEach(el=> el.addEventListener('input', ()=>markDirty('saveSettings')));
+  document.getElementById('sharedCodeInput').addEventListener('input', ()=>markDirty('saveSharedCodeBtn'));
   document.querySelectorAll('.companyCodeInput').forEach(el=> el.addEventListener('input', ()=>markDirty('saveCodesBtn')));
   document.querySelectorAll('.chiefFlag').forEach(el=> el.addEventListener('change', ()=>markDirty('saveChiefBtn')));
 
@@ -1665,27 +1788,70 @@ function renderSettingsTab(){
     ]);
     toast('Settings saved'); clearDirty('saveSettings'); loadRefData();
   };
+  document.getElementById('saveSharedCodeBtn').onclick = async ()=>{
+    await sb.from('app_settings').upsert([{ key:'shared_company_login_code', value: document.getElementById('sharedCodeInput').value }]);
+    toast('Login code saved'); clearDirty('saveSharedCodeBtn'); loadRefData();
+  };
   document.getElementById('saveCodesBtn').onclick = async ()=>{
     const updates = Array.from(document.querySelectorAll('.companyCodeInput')).map(input => ({ id: input.dataset.company, access_code: input.value }));
     for(const u of updates) await sb.from('companies').update({ access_code: u.access_code }).eq('id', u.id);
-    toast('Login codes saved'); clearDirty('saveCodesBtn'); loadRefData();
+    toast('Chief codes saved'); clearDirty('saveCodesBtn'); loadRefData();
   };
   document.getElementById('saveChiefBtn').onclick = async ()=>{
     const updates = Array.from(document.querySelectorAll('.chiefFlag')).map(cb => ({ id: cb.dataset.company, is_chief: cb.checked }));
     for(const u of updates) await sb.from('companies').update({ is_chief: u.is_chief }).eq('id', u.id);
     toast('Chief access saved'); clearDirty('saveChiefBtn'); loadRefData();
   };
+
+  const chiefCheckbox = document.getElementById('newCompanyChief');
+  const codeInput = document.getElementById('newCompanyCode');
+  chiefCheckbox.addEventListener('change', ()=>{
+    if(chiefCheckbox.checked){ codeInput.disabled = false; codeInput.value = ''; codeInput.placeholder = 'Enter a unique password'; }
+    else { codeInput.disabled = true; codeInput.value = sharedCode(); }
+  });
   document.getElementById('addCompanyBtn').onclick = async ()=>{
     const name = document.getElementById('newCompanyName').value.trim();
-    const code = document.getElementById('newCompanyCode').value.trim();
-    const isChief = document.getElementById('newCompanyChief').checked;
-    if(!name || !code){ toast('Enter a name and login code'); return; }
+    const isChief = chiefCheckbox.checked;
+    const code = isChief ? codeInput.value.trim() : sharedCode();
+    if(!name){ toast('Enter a name'); return; }
+    if(isChief && !code){ toast('Enter a login code for this chief login'); return; }
     const { error } = await sb.from('companies').insert({ name, access_code: code, is_chief: isChief });
     if(error){ toast('Error: ' + error.message); return; }
     toast('Company added');
     await loadRefData();
     renderSettingsTab();
   };
+
+  let campSelectedAll = true;
+  let campSelectedIds = new Set(state.companies.map(c=>c.id));
+  document.querySelectorAll('[data-camp-all]').forEach(el=>{
+    el.onclick = ()=>{
+      campSelectedAll = true;
+      campSelectedIds = new Set(state.companies.map(c=>c.id));
+      document.querySelectorAll('#newCampaignCompanies .chip').forEach(c=>c.classList.add('active'));
+    };
+  });
+  document.querySelectorAll('[data-camp-company]').forEach(el=>{
+    el.onclick = ()=>{
+      const id = el.dataset.campCompany;
+      if(campSelectedIds.has(id)) campSelectedIds.delete(id); else campSelectedIds.add(id);
+      campSelectedAll = campSelectedIds.size === state.companies.length;
+      el.classList.toggle('active', campSelectedIds.has(id));
+      document.querySelector('[data-camp-all]').classList.toggle('active', campSelectedAll);
+    };
+  });
+  document.getElementById('createCampaignBtn').onclick = async ()=>{
+    const activityType = document.getElementById('newCampaignActivity').value;
+    let name = document.getElementById('newCampaignName').value.trim();
+    if(!name) name = ACTIVITY_LABELS[activityType] + ' — started ' + new Date().toLocaleDateString([], {month:'long', year:'numeric'});
+    const companyIds = campSelectedAll ? null : Array.from(campSelectedIds);
+    const { error } = await sb.from('campaigns').insert({ name, activity_type: activityType, status:'open', company_ids: companyIds });
+    if(error){ toast('Error: ' + error.message); return; }
+    toast('Campaign created');
+    state.tab = 'campaigns';
+    renderChiefShell();
+  };
+
   document.getElementById('exportBtn').onclick = async ()=>{
     const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number,address)');
     if(!data || !data.length){ toast('No data yet'); return; }
