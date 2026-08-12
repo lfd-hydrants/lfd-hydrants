@@ -160,7 +160,7 @@ const ACTIVITY_LABELS = {flow_test:'Flow Test', condition_check:'Condition Check
 
 let state = {
   tab: 'new',
-  company: null, division: null, superAdmin: null, isChief: false,
+  company: null, division: null, block: null, superAdmin: null, isChief: false,
   companies: [], divisions: [], members: [], hydrants: [], settings: {},
   activeJob: null, activeSession: null,
 };
@@ -175,10 +175,12 @@ async function init(){
   try{
     const savedCompany = localStorage.getItem('lfd_company');
     const savedDivision = localStorage.getItem('lfd_division');
+    const savedBlock = localStorage.getItem('lfd_block');
     const savedSuper = localStorage.getItem('lfd_super_admin');
     if(savedSuper) state.superAdmin = JSON.parse(savedSuper);
     else if(savedCompany) state.company = JSON.parse(savedCompany);
     if(savedDivision) state.division = JSON.parse(savedDivision);
+    if(savedBlock) state.block = savedBlock;
   }catch(e){}
   await loadRefData();
   render();
@@ -319,12 +321,39 @@ function renderDivisionSelect(){
   };
 }
 
+function renderBlockSelect(){
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="card">
+        <h2 style="margin-top:0;">${esc(state.company.name)} · ${esc(state.division.name)}</h2>
+        <div class="hint" style="margin-bottom:14px;">Which list are you assigned?</div>
+        <div class="row2">
+          ${['A','B','C','D'].map(b=>`<button type="button" class="choice-btn" data-block="${b}" style="text-align:center;font-size:18px;font-weight:700;">List ${b}</button>`).join('')}
+        </div>
+        <button class="secondary" id="switchDivBtn">← Not ${esc(state.division.name)}?</button>
+      </div>
+    </div>`;
+  document.querySelectorAll('[data-block]').forEach(btn=>{
+    btn.onclick = ()=>{
+      state.block = btn.dataset.block;
+      localStorage.setItem('lfd_block', state.block);
+      render();
+    };
+  });
+  document.getElementById('switchDivBtn').onclick = ()=>{
+    state.division = null;
+    localStorage.removeItem('lfd_division');
+    render();
+  };
+}
+
 // ============================================================
 // SHELLS
 // ============================================================
 function clearLogin(){
-  state.company = null; state.division = null; state.superAdmin = null; state.isChief = false;
+  state.company = null; state.division = null; state.block = null; state.superAdmin = null; state.isChief = false;
   localStorage.removeItem('lfd_company'); localStorage.removeItem('lfd_division');
+  localStorage.removeItem('lfd_block');
   localStorage.removeItem('lfd_super_admin'); localStorage.removeItem('lfd_active_session_id');
 }
 function backBar(label, id){
@@ -357,14 +386,18 @@ function render(){
   if(companyRow && companyRow.is_chief){ state.isChief = true; renderChiefShell(); return; }
   state.isChief = false;
   if(!state.division){ renderDivisionSelect(); return; }
+  if(!state.block){ renderBlockSelect(); return; }
   renderCompanyShell();
 }
 
 function renderCompanyShell(){
   app.innerHTML = `
     <header>
-      <div><h1>LFD Hydrant Testing</h1><div class="who">${esc(state.company.name)} · ${esc(state.division.name)}</div></div>
-      <button id="switchBtn">Switch</button>
+      <div><h1>LFD Hydrant Testing</h1><div class="who">${esc(state.company.name)} · ${esc(state.division.name)} · List ${esc(state.block)}</div></div>
+      <div style="display:flex;gap:6px;">
+        <button id="changeBlockBtn">Change List</button>
+        <button id="switchBtn">Switch</button>
+      </div>
     </header>
     <div class="tabs">
       <div class="tab" data-tab="new">Home</div>
@@ -372,6 +405,9 @@ function renderCompanyShell(){
     </div>
     <main id="main"></main>`;
   document.getElementById('switchBtn').onclick = ()=> guardNavigate(()=>{ clearLogin(); render(); });
+  document.getElementById('changeBlockBtn').onclick = ()=> guardNavigate(()=>{
+    state.block = null; localStorage.removeItem('lfd_block'); render();
+  });
   document.querySelectorAll('.tab').forEach(t=>{
     t.classList.toggle('active', t.dataset.tab === state.tab);
     t.onclick = ()=> guardNavigate(()=>{ state.tab = t.dataset.tab; render(); });
@@ -429,8 +465,8 @@ function memberTypeaheadHtml(id, placeholder){ return typeaheadHtml(id, placehol
 // ============================================================
 // COMPLETION HELPERS
 // ============================================================
-async function computeCompletionForCompanyDivision(companyId, divisionId, activityType, cutoffDate){
-  const hydrantsFor = state.hydrants.filter(h => h.company_id === companyId && h.division_id === divisionId);
+async function computeCompletionForCompanyBlock(companyId, block, activityType, cutoffDate){
+  const hydrantsFor = state.hydrants.filter(h => h.company_id === companyId && h.block === block);
   const ids = hydrantsFor.map(h=>h.id);
   if(ids.length === 0) return { pending: [], total: 0, completedCount: 0 };
   const { data } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, sessions(activity_type)').in('hydrant_id', ids);
@@ -441,7 +477,7 @@ async function computeCompletionForCompanyDivision(companyId, divisionId, activi
   return { pending, total: hydrantsFor.length, completedCount: hydrantsFor.length - pending.length };
 }
 async function computeJobPending(job){
-  return computeCompletionForCompanyDivision(job.company_id, job.division_id, job.activity_type, new Date(job.created_at));
+  return computeCompletionForCompanyBlock(job.company_id, job.block, job.activity_type, new Date(job.created_at));
 }
 
 // ============================================================
@@ -453,8 +489,8 @@ async function renderCompanyHome(){
   const fourteenDaysAgo = new Date(Date.now() - 14*24*60*60*1000).toISOString();
 
   const [{ data: openJobs }, { data: closedJobs }] = await Promise.all([
-    sb.from('jobs').select('*').eq('company_id', state.company.id).eq('division_id', state.division.id).eq('status','open').order('created_at', {ascending:false}),
-    sb.from('jobs').select('*').eq('company_id', state.company.id).eq('division_id', state.division.id).eq('status','closed').gte('closed_at', fourteenDaysAgo).order('closed_at', {ascending:false}),
+    sb.from('jobs').select('*').eq('company_id', state.company.id).eq('block', state.block).eq('status','open').order('created_at', {ascending:false}),
+    sb.from('jobs').select('*').eq('company_id', state.company.id).eq('block', state.block).eq('status','closed').gte('closed_at', fourteenDaysAgo).order('closed_at', {ascending:false}),
   ]);
 
   const jobRows = [];
@@ -605,7 +641,7 @@ function renderActivityPicker(){
     btn.onclick = async ()=>{
       const activityType = btn.dataset.activity;
       const { data: existing } = await sb.from('jobs').select('*')
-        .eq('company_id', state.company.id).eq('division_id', state.division.id)
+        .eq('company_id', state.company.id).eq('block', state.block)
         .eq('activity_type', activityType).eq('status','open').maybeSingle();
       if(existing){
         const { data: openShift } = await sb.from('sessions').select('*').eq('job_id', existing.id).eq('status','open').maybeSingle();
@@ -725,7 +761,7 @@ function renderStartShift(prefill, editingSession){
       if(!job){
         const campaign = await getOrCreateCampaign(prefill.activityType);
         const { data: newJob, error: jobErr } = await sb.from('jobs').insert({
-          company_id: state.company.id, division_id: state.division.id,
+          company_id: state.company.id, block: state.block,
           activity_type: prefill.activityType, status: 'open',
           campaign_id: campaign ? campaign.id : null,
         }).select().single();
@@ -760,8 +796,7 @@ function hydrantPickerHtml(pending){
       <label>Hydrant not on the list?</label>
       <select id="manualDropdown"><option value="">Browse all hydrants…</option>${[...state.hydrants].sort((a,b)=>a.hydrant_number.localeCompare(b.hydrant_number,undefined,{numeric:true})).map(h=>{
         const comp = state.companies.find(c=>c.id===h.company_id)?.name || '—';
-        const div = state.divisions.find(d=>d.id===h.division_id)?.name || '—';
-        return `<option value="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')} (${esc(comp)} · ${esc(div)})</option>`;
+        return `<option value="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')} (${esc(comp)} · List ${esc(h.block||'—')})</option>`;
       }).join('')}</select>
       <input type="text" id="manualSearch" placeholder="…or search by number or address" style="margin-top:6px;">
       <div class="search-results" id="manualResults" style="display:none;"></div>
@@ -780,8 +815,7 @@ function wireHydrantPicker(afterPick){
     results.style.display = matches.length ? 'block' : 'none';
     results.innerHTML = matches.map(h => {
       const comp = state.companies.find(c=>c.id===h.company_id)?.name || '—';
-      const div = state.divisions.find(d=>d.id===h.division_id)?.name || '—';
-      return `<div class="search-result-item" data-id="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}<small>${esc(comp)} · ${esc(div)}</small></div>`;
+      return `<div class="search-result-item" data-id="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}<small>${esc(comp)} · List ${esc(h.block||'—')}</small></div>`;
     }).join('');
     results.querySelectorAll('.search-result-item').forEach(el=>{
       el.onclick = ()=>{
@@ -799,14 +833,14 @@ async function computeCampaignOverallStats(campaign){
   const eligibleCompanyIds = (campaign.company_ids && campaign.company_ids.length) ? new Set(campaign.company_ids) : null;
   const pairsMap = new Map();
   state.hydrants.forEach(h => {
-    if(!h.company_id || !h.division_id) return;
+    if(!h.company_id || !h.block) return;
     if(eligibleCompanyIds && !eligibleCompanyIds.has(h.company_id)) return;
-    const key = h.company_id+'|'+h.division_id;
-    if(!pairsMap.has(key)) pairsMap.set(key, {companyId:h.company_id, divisionId:h.division_id});
+    const key = h.company_id+'|'+h.block;
+    if(!pairsMap.has(key)) pairsMap.set(key, {companyId:h.company_id, block:h.block});
   });
   let total = 0, done = 0;
-  for(const {companyId, divisionId} of pairsMap.values()){
-    const r = await computeCompletionForCompanyDivision(companyId, divisionId, campaign.activity_type, cutoff);
+  for(const {companyId, block} of pairsMap.values()){
+    const r = await computeCompletionForCompanyBlock(companyId, block, campaign.activity_type, cutoff);
     total += r.total; done += r.completedCount;
   }
   return { total, done, pct: total ? Math.round(done/total*100) : 0 };
@@ -833,7 +867,7 @@ async function renderHydrantEntry(){
 
   const headerHtml = backBar('Home', 'topBackBtn') + `
     <div class="card" style="background:#f1efe8;">
-      <div style="font-size:13px;"><b>${esc(state.company.name)} · ${esc(ACTIVITY_LABELS[job.activity_type])}</b> — job open since ${fmtDate(job.created_at)}</div>
+      <div style="font-size:13px;"><b>${esc(state.company.name)} · List ${esc(job.block||'—')} · ${esc(ACTIVITY_LABELS[job.activity_type])}</b> — job open since ${fmtDate(job.created_at)}</div>
       <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This shift started ${fmtDateTime(s.started_at)} · OIC: ${esc(oicName)} · Division: ${esc(divisionName)} · Crew: ${(s.crew_member_ids||[]).length}</div>
       <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This job: ${completedCount}/${total} complete</div>
       ${campaignLine}
@@ -1139,7 +1173,7 @@ const STATUS_SYMBOLS = { good:'✓', damaged:'!', oos:'✕' };
 async function renderMasterHydrantList(opts){
   const isChief = !!opts.isChief;
   let selCompany = isChief ? '' : state.company.id;
-  let selDivision = isChief ? '' : state.division.id;
+  let selBlock = isChief ? '' : state.block;
   const main = document.getElementById('main');
 
   const { data: allTests } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, condition, snow_condition_flag');
@@ -1154,8 +1188,8 @@ async function renderMasterHydrantList(opts){
           <div class="field"><label>Company</label>
             <select id="mhCompany"><option value="">All Companies</option>${state.companies.map(c=>`<option value="${c.id}" ${selCompany===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
           </div>
-          <div class="field"><label>Division</label>
-            <select id="mhDivision"><option value="">All Divisions</option>${state.divisions.map(d=>`<option value="${d.id}" ${selDivision===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
+          <div class="field"><label>List</label>
+            <select id="mhBlock"><option value="">All Lists</option>${['A','B','C','D'].map(b=>`<option value="${b}" ${selBlock===b?'selected':''}>List ${b}</option>`).join('')}</select>
           </div>
         </div>
         <button class="secondary" id="seeAllBtn">See All Hydrants (Citywide)</button>
@@ -1163,15 +1197,15 @@ async function renderMasterHydrantList(opts){
       </div>`;
     document.getElementById('topBackBtn').onclick = opts.backTo;
     document.getElementById('mhCompany').addEventListener('change', (e)=>{ selCompany = e.target.value; renderList(); });
-    document.getElementById('mhDivision').addEventListener('change', (e)=>{ selDivision = e.target.value; renderList(); });
-    document.getElementById('seeAllBtn').onclick = ()=>{ selCompany=''; selDivision=''; render(); };
+    document.getElementById('mhBlock').addEventListener('change', (e)=>{ selBlock = e.target.value; renderList(); });
+    document.getElementById('seeAllBtn').onclick = ()=>{ selCompany=''; selBlock=''; render(); };
     renderList();
   }
 
   function renderList(){
     let hydrants = state.hydrants;
     if(selCompany) hydrants = hydrants.filter(h=>h.company_id===selCompany);
-    if(selDivision) hydrants = hydrants.filter(h=>h.division_id===selDivision);
+    if(selBlock) hydrants = hydrants.filter(h=>h.block===selBlock);
     const sorted = [...hydrants].sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
     document.getElementById('mhList').innerHTML = sorted.map(h => {
       const status = computeHydrantStatus(testsByHydrant[h.id] || []);
@@ -1272,13 +1306,12 @@ async function renderStatusTab(){
       </div>
       ${flagged.map(({h, status}) => {
         const compName = state.companies.find(c=>c.id===h.company_id)?.name || '—';
-        const divName = state.divisions.find(d=>d.id===h.division_id)?.name || '—';
         return `
         <div class="card" data-flaggedcard="${h.id}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;">
             <div>
               <div style="font-weight:700;font-size:15px;">${esc(h.hydrant_number)}</div>
-              <div class="hint">${esc(h.address||'')} · ${esc(compName)} · ${esc(divName)}</div>
+              <div class="hint">${esc(h.address||'')} · ${esc(compName)} · List ${esc(h.block||'—')}</div>
             </div>
             <span class="status-badge ${status}">${STATUS_SYMBOLS[status]} ${STATUS_LABELS[status]}</span>
           </div>
@@ -1646,7 +1679,7 @@ async function closeCampaignWithComputedEndDate(campaignId){
 async function computeCampaignQuickStats(campaign, allTests){
   const cutoff = new Date(campaign.created_at);
   const eligibleCompanyIds = (campaign.company_ids && campaign.company_ids.length) ? new Set(campaign.company_ids) : null;
-  const totalHydrants = state.hydrants.filter(h => h.company_id && h.division_id && (!eligibleCompanyIds || eligibleCompanyIds.has(h.company_id))).length;
+  const totalHydrants = state.hydrants.filter(h => h.company_id && h.block && (!eligibleCompanyIds || eligibleCompanyIds.has(h.company_id))).length;
   const relevant = allTests.filter(t => t.sessions && t.sessions.activity_type === campaign.activity_type && new Date(t.tested_at) >= cutoff);
   const doneIds = new Set(relevant.map(t=>t.hydrant_id));
   const pct = totalHydrants ? Math.round(doneIds.size / totalHydrants * 100) : 0;
@@ -1807,23 +1840,22 @@ async function renderCampaignDetail(campaignId){
 
   const pairsMap = new Map();
   state.hydrants.forEach(h => {
-    if(!h.company_id || !h.division_id) return;
+    if(!h.company_id || !h.block) return;
     if(eligibleCompanyIds && !eligibleCompanyIds.has(h.company_id)) return;
-    const key = h.company_id + '|' + h.division_id;
-    if(!pairsMap.has(key)) pairsMap.set(key, { companyId: h.company_id, divisionId: h.division_id });
+    const key = h.company_id + '|' + h.block;
+    if(!pairsMap.has(key)) pairsMap.set(key, { companyId: h.company_id, block: h.block });
   });
 
   let totalHydrants = 0, totalDone = 0;
   const rows = [];
-  for(const { companyId, divisionId } of pairsMap.values()){
-    const { total, completedCount } = await computeCompletionForCompanyDivision(companyId, divisionId, campaign.activity_type, cutoff);
+  for(const { companyId, block } of pairsMap.values()){
+    const { total, completedCount } = await computeCompletionForCompanyBlock(companyId, block, campaign.activity_type, cutoff);
     totalHydrants += total; totalDone += completedCount;
-    const job = (jobs||[]).find(j => j.company_id === companyId && j.division_id === divisionId);
+    const job = (jobs||[]).find(j => j.company_id === companyId && j.block === block);
     const compName = state.companies.find(c=>c.id===companyId)?.name || '—';
-    const divName = state.divisions.find(d=>d.id===divisionId)?.name || '—';
-    rows.push({ compName, divName, total, completedCount, pct: total ? Math.round(completedCount/total*100) : 0, status: job ? job.status : 'not started' });
+    rows.push({ compName, block, total, completedCount, pct: total ? Math.round(completedCount/total*100) : 0, status: job ? job.status : 'not started' });
   }
-  rows.sort((a,b)=> compareCompanyNames(a.compName,b.compName) || a.divName.localeCompare(b.divName));
+  rows.sort((a,b)=> compareCompanyNames(a.compName,b.compName) || a.block.localeCompare(b.block));
   const overallPct = totalHydrants ? Math.round(totalDone/totalHydrants*100) : 0;
 
   const jobIds = (jobs||[]).map(j=>j.id);
@@ -1847,9 +1879,9 @@ async function renderCampaignDetail(campaignId){
       </div>
     </div>
     <div class="card">
-      <h3 style="margin-top:0;">By Company / Division</h3>
-      <table class="report"><thead><tr><th>Company</th><th>Division</th><th>Complete</th><th>%</th><th>Status</th></tr></thead>
-      <tbody>${rows.map(r=>`<tr><td>${esc(r.compName)}</td><td>${esc(r.divName)}</td><td>${r.completedCount}/${r.total}</td><td>${r.pct}%</td><td>${esc(r.status)}</td></tr>`).join('')}</tbody></table>
+      <h3 style="margin-top:0;">By Company / List</h3>
+      <table class="report"><thead><tr><th>Company</th><th>List</th><th>Complete</th><th>%</th><th>Status</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${esc(r.compName)}</td><td>${esc(r.block)}</td><td>${r.completedCount}/${r.total}</td><td>${r.pct}%</td><td>${esc(r.status)}</td></tr>`).join('')}</tbody></table>
     </div>`;
 
   document.getElementById('topBackBtn').onclick = renderCampaignsTab;
