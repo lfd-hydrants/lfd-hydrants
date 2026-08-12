@@ -134,7 +134,55 @@ visibility, stats, and exportable reports/backups.
 - ⏳ Role-based permissions (admin vs. field user) — currently all authenticated
   users have full read/write access; needs tightening before real rollout
 
-## Latest build (this session) — no new SQL, app-level only
+## Build history
+
+### Real hydrant data + List (block) assignment correction (this session) — requires migrations 010 + 011
+
+**This is the big one — real hydrant data goes live, and a structural
+correction to how hydrant lists are assigned.**
+
+- **CORRECTION: hydrants are assigned by "List" (A/B/C/D), not by
+  Division.** The department's actual model: each company's hydrant
+  roster is permanently split into 4 lists (tied to the address), and
+  the captain assigns whichever crew/Division is on duty to work a
+  given list for a given task — the pairing is flexible, decided task
+  by task, not fixed. Division (Group 1-4) stays exactly as it was —
+  still selected at login, still recorded per shift for time tracking —
+  it just no longer determines which hydrants show up. That's now
+  driven by List instead.
+  - New `hydrants.block` column (`A`/`B`/`C`/`D`) — the permanent
+    assignment, replacing the incorrect use of `division_id` for this
+    from earlier sessions.
+  - New `jobs.block` column — jobs are now scoped by
+    **Company + List + Activity**, not Company + Division + Activity.
+    The database-level uniqueness constraint moved to match.
+  - **Login flow gets a third step**: Company → Division (unchanged) →
+    **"Which list are you assigned?"** (pick A/B/C/D) — that list's
+    hydrants become the job's pending list. A **"Change List"** button
+    on Company Home lets a crew switch lists without a full re-login
+    (e.g. captain reassigns them mid-shift).
+  - Every screen that showed Division alongside a hydrant (Master
+    Hydrant List, hydrant search/picker, Campaign Detail's breakdown
+    table, the Status tab) now shows **List** instead — Division still
+    appears where it's actually about the crew/shift (Shift Settings,
+    the hydrant entry header's crew info line).
+- **Real hydrant data imported** — 1,856 hydrants from the department's
+  actual master flow-test spreadsheet, replacing all placeholder test
+  data. See `sql/011_real_hydrant_import.sql` for the full list and
+  data-quality notes (264 hydrants had no number in the source sheet
+  and got sequential `TBD-####` placeholders; a couple of numbers that
+  collided across two companies got a `-b` suffix on the second
+  occurrence). **This migration wipes all hydrant_tests, sessions,
+  jobs, and campaigns** — anything logged during testing so far is
+  gone. Companies, divisions, members, and settings are untouched.
+
+**Deploying this update:**
+1. Run `sql/010_hydrant_block_assignment.sql`
+2. Run `sql/011_real_hydrant_import.sql` — **read the warning in that
+   file first**; it clears all test activity data
+3. Replace `index.html` on GitHub
+
+### Status tab, colorblind symbols, chip-based exports (earlier session) — no new SQL
 
 - **New "Status" tab** (chief-level dashboard) — a filtered problem list
   showing only currently Damaged or Out of Service hydrants, department-
@@ -249,7 +297,7 @@ visibility, stats, and exportable reports/backups.
   Same searchable dropdown+type behavior as before, just no more
   browser-suggested previous entries.
 
-## Latest build (this session) — no new SQL, app-level only, 2 new files
+### Unsaved-work warnings, PWA install, colorblind dots, log date filter — no new SQL, 2 new files
 
 - **Warn before losing unsaved work** — the three hydrant entry forms and
   Shift Settings now track unsaved changes and prompt ("You have unsaved
@@ -365,51 +413,62 @@ Practical implications:
 
 ## Database structure (plain-English)
 
-- `companies` / `divisions` — reference lists
-- `members` — the roster (linked to a company)
-- `hydrants` — the roster of hydrants (linked to a company, has a retest interval)
-- `sessions` — one row per outing: date, OIC, division, company, crew (array of
-  member IDs), total minutes. This is the "header" the OIC fills out once.
-- `hydrant_tests` — one row per flow test, linked to a session and a hydrant.
-  Stores raw readings + calculated flow/drop/flow-at-20psi.
-- `hydrant_events` — for non-flow-test activity (shoveling, damage checks, etc.),
-  same session/hydrant linkage.
-- `app_settings` — key/value store for admin-editable settings (retest interval,
-  discharge coefficient default, etc.) so nothing is hardcoded.
+- `companies` — the fleet (Engine 1/3/5/7/9/10, Ladder 1/2/4, plus
+  chief-level entries C1/C2/C4). Has `access_code` (used only for
+  chief-level logins — regular companies share one code from
+  `app_settings`) and `is_chief`.
+- `divisions` — the 4 operational crew groups (Group 1-4), purely for
+  shift/time tracking. Not tied to hydrant assignment.
+- `members` — the roster (not tied to a company).
+- `hydrants` — the real roster (1,856 rows). `company_id` + `block`
+  (A/B/C/D) is the permanent assignment; `block` is what the app calls
+  "List" in the UI.
+- `jobs` — the ongoing task for one Company + Block + Activity. Can
+  span many days/shifts. Optionally belongs to a `campaign_id`.
+- `sessions` — one shift: date, OIC, division (Group), crew, total
+  minutes, linked to a `job_id`.
+- `hydrant_tests` — one row per logged entry (test, condition check,
+  snow status, or a chief's status update), linked to a hydrant and
+  optionally a session (null `session_id` for chief-issued status
+  changes not tied to a shift).
+- `campaigns` — the citywide umbrella above jobs, optionally scoped to
+  specific companies via `company_ids`.
+- `super_admins` — the hidden personal admin login(s).
+- `app_settings` — key/value store (retest interval, discharge
+  coefficient default, shared company login code, etc.).
 
 ## How to test this right now
 
 1. Open Supabase → your project → **SQL Editor**
-2. Run `sql/001_initial_schema.sql` through `sql/005_real_fleet_test_data.sql` in order,
-   if you haven't already.
-3. Run `sql/006_company_login_and_job_integrity.sql`.
-4. Run `sql/007_hydrant_division_assignment.sql`.
-5. Run `sql/008_campaigns_and_admin_tiers.sql`.
-6. Run `sql/009_campaign_company_scope.sql`.
-
-**Note on login codes after this update**: non-chief companies now all
-share ONE login code (Settings → Company Login Code, defaults to `lfd2026`
-until changed). Any individual `access_code` values set per-company in an
-earlier session are no longer used for login — only chief-level companies'
-individual codes still matter.
-6. Visit the live site: `https://lfd-hydrants.vercel.app`
-7. **Test a regular company**: sign in as e.g. "Engine 1" (password `lfd2026`),
-   pick a division, Start New Job, log a couple of hydrants, End Shift. Confirm
-   only Home and Log tabs are visible — no Stats/Admin.
-8. **Test chief access**: sign in as "C4" (password `lfd2026`) — this should
-   skip division selection entirely and go straight to a Campaigns/Reports/
-   Log/Stats/Settings dashboard.
-9. **Test the personal admin login**: from the login screen, click "Admin
-   Login", sign in with username `admin` / password `changeme2026`. **Change
-   this password immediately** from Settings → Personal Admin Login.
-10. **Test campaigns**: after step 7's job was started, go to the chief
-    dashboard's Campaigns tab — a campaign should already exist automatically
-    (e.g. "Flow Test — started [month/year]"), showing that company/division's
-    progress. Start a job under a different company/division for the same
-    activity and confirm it joins the same campaign.
-11. **Test Reports**: browse company/division sub-tabs, click column headers
-    to sort, try "flagged only", then try the Custom CSV Export with a few
-    filters.
+2. Run `sql/001_initial_schema.sql` through `sql/011_real_hydrant_import.sql`
+   in order, if you haven't already. **`011` wipes any test data logged so
+   far and loads the real 1,856-hydrant roster** — read its warning comment
+   before running.
+3. Visit the live site: `https://lfd-hydrants.vercel.app`
+4. **Test a regular company**: sign in with a Company name (e.g. "Engine 1")
+   and the shared password (Settings → Company Login Code, defaults to
+   `lfd2026` until changed). Pick a Division (Group), then pick a **List**
+   (A/B/C/D) when prompted. Start New Job, log a couple of hydrants, End
+   Shift. Confirm only Home and Log tabs are visible.
+5. **Test "Change List"**: from Company Home, click Change List and confirm
+   it swaps to a different list's hydrants without a full re-login.
+6. **Test chief access**: sign in as "C1", "C2", or "C4" (their own
+   individual password, set in Settings → Chief Login Codes) — this skips
+   Division/List entirely and goes to the Campaigns/Status/Reports/Log/
+   Stats/Settings dashboard.
+7. **Test the personal admin login**: on the login screen, type `admin` as
+   the Company (this is intentionally not a visible button — see the
+   security note above) with its password. **Change this password
+   immediately** via SQL Editor — there's no in-app UI for it by design.
+8. **Test campaigns**: after step 4's job was started, go to the chief
+   dashboard's Campaigns tab — a campaign should already exist automatically.
+   Start a job under a different company/list for the same activity and
+   confirm it joins the same campaign.
+9. **Test Reports**: try the company/activity chip filters, "flagged only",
+   and the Custom CSV/PDF Export with a few filters.
+10. **Test the Master Hydrant List and Status tab**: confirm hydrants show
+    real addresses from the import, color-coded correctly, and that a
+    flagged one can be marked repaired from the Status tab (chief-only).
 
 ## Next steps (in rough order)
 
