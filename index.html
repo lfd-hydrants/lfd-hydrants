@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LFD Hydrant Testing</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#1a1a1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hydrants">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
@@ -73,7 +80,7 @@
   .toggle-btn.active.bad{background:var(--red-deep);border-color:var(--red-deep);}
   .status-row{display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid var(--line);font-size:13.5px;cursor:pointer;}
   .status-row:active{background:#f1efe8;}
-  .status-dot{width:14px;height:14px;border-radius:50%;flex-shrink:0;margin-right:8px;}
+  .status-dot{width:16px;height:16px;border-radius:50%;flex-shrink:0;margin-right:8px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:900;line-height:1;}
   .status-dot.good{background:var(--ok);}
   .status-dot.damaged{background:#e0a52c;}
   .status-dot.oos{background:var(--red-deep);}
@@ -324,6 +331,25 @@ function backBar(label, id){
   return `<div class="back-bar"><button class="small neutral" id="${id}">← ${esc(label)}</button></div>`;
 }
 
+// ---- Unsaved-changes warning ----
+let unsavedChanges = false;
+function markFormDirty(){ unsavedChanges = true; }
+function clearFormDirty(){ unsavedChanges = false; }
+function guardNavigate(navigateFn){
+  if(unsavedChanges && !confirm('You have unsaved changes. Leave without saving?')) return;
+  unsavedChanges = false;
+  navigateFn();
+}
+window.addEventListener('beforeunload', (e)=>{
+  if(unsavedChanges){ e.preventDefault(); e.returnValue = ''; }
+});
+function wireDirtyTracking(container){
+  container.querySelectorAll('input, textarea, select').forEach(el=>{
+    el.addEventListener('input', markFormDirty);
+    el.addEventListener('change', markFormDirty);
+  });
+}
+
 function render(){
   if(state.superAdmin){ state.isChief = true; renderChiefShell(); return; }
   if(!state.company){ renderCompanyLogin(); return; }
@@ -345,10 +371,10 @@ function renderCompanyShell(){
       <div class="tab" data-tab="log">Log</div>
     </div>
     <main id="main"></main>`;
-  document.getElementById('switchBtn').onclick = ()=>{ clearLogin(); render(); };
+  document.getElementById('switchBtn').onclick = ()=> guardNavigate(()=>{ clearLogin(); render(); });
   document.querySelectorAll('.tab').forEach(t=>{
     t.classList.toggle('active', t.dataset.tab === state.tab);
-    t.onclick = ()=>{ state.tab = t.dataset.tab; render(); };
+    t.onclick = ()=> guardNavigate(()=>{ state.tab = t.dataset.tab; render(); });
   });
   if(state.tab === 'log') renderLog();
   else { state.tab = 'new'; routeHomeTab(); }
@@ -356,7 +382,7 @@ function renderCompanyShell(){
 
 function renderChiefShell(){
   const who = state.superAdmin ? `Admin — ${esc(state.superAdmin.username)}` : `${esc(state.company.name)} (Chief Access)`;
-  if(!['campaigns','reports','log','stats','settings'].includes(state.tab)) state.tab = 'campaigns';
+  if(!['campaigns','reports','status','log','stats','settings'].includes(state.tab)) state.tab = 'campaigns';
   app.innerHTML = `
     <header>
       <div><h1>LFD Hydrant Testing</h1><div class="who">${who}</div></div>
@@ -364,18 +390,20 @@ function renderChiefShell(){
     </header>
     <div class="tabs">
       <div class="tab" data-tab="campaigns">Campaigns</div>
+      <div class="tab" data-tab="status">Status</div>
       <div class="tab" data-tab="reports">Reports</div>
       <div class="tab" data-tab="log">Log</div>
       <div class="tab" data-tab="stats">Stats</div>
       <div class="tab" data-tab="settings">Settings</div>
     </div>
     <main id="main"></main>`;
-  document.getElementById('switchBtn').onclick = ()=>{ clearLogin(); render(); };
+  document.getElementById('switchBtn').onclick = ()=> guardNavigate(()=>{ clearLogin(); render(); });
   document.querySelectorAll('.tab').forEach(t=>{
     t.classList.toggle('active', t.dataset.tab === state.tab);
-    t.onclick = ()=>{ state.tab = t.dataset.tab; render(); };
+    t.onclick = ()=> guardNavigate(()=>{ state.tab = t.dataset.tab; render(); });
   });
   if(state.tab === 'campaigns') renderCampaignsTab();
+  else if(state.tab === 'status') renderStatusTab();
   else if(state.tab === 'reports') renderReportsTab();
   else if(state.tab === 'log') renderLog();
   else if(state.tab === 'stats') renderStats();
@@ -635,7 +663,7 @@ function renderStartShift(prefill, editingSession){
       <button class="primary" id="startBtn">${isEdit ? 'Save Changes' : 'Start Shift'}</button>
     </div>`;
   attachDatePicker('f_date');
-  document.getElementById('topBackBtn').onclick = ()=> isEdit ? renderHydrantEntry() : renderCompanyHome();
+  document.getElementById('topBackBtn').onclick = ()=> guardNavigate(()=> isEdit ? renderHydrantEntry() : renderCompanyHome());
 
   wireTypeahead('f_oic', state.members);
   if(isEdit && editingSession.oic_member_id){
@@ -643,6 +671,9 @@ function renderStartShift(prefill, editingSession){
     if(m){ document.getElementById('f_oic_text').value = m.name; document.getElementById('f_oic_value').value = m.id; }
   }
   wireTypeahead('f_crew_pick', state.members);
+  clearFormDirty();
+  document.getElementById('f_date').addEventListener('input', markFormDirty);
+  document.getElementById('f_division').addEventListener('change', markFormDirty);
 
   function renderCrewList(){
     const list = document.getElementById('crewList');
@@ -664,6 +695,7 @@ function renderStartShift(prefill, editingSession){
     if(sessionCrew.some(m => m.id === id)){ toast('Already added'); return; }
     const member = state.members.find(m => m.id === id);
     sessionCrew.push({ id: member.id, name: member.name });
+    markFormDirty();
     document.getElementById('f_crew_pick_text').value = '';
     document.getElementById('f_crew_pick_value').value = '';
     renderCrewList();
@@ -684,6 +716,7 @@ function renderStartShift(prefill, editingSession){
     if(isEdit){
       const { data, error } = await sb.from('sessions').update(payload).eq('id', editingSession.id).select().single();
       if(error){ toast('Error: ' + error.message); return; }
+      clearFormDirty();
       state.activeSession = data;
       toast('Shift updated');
       renderHydrantEntry();
@@ -704,6 +737,7 @@ function renderStartShift(prefill, editingSession){
         job_id: job.id, started_at: new Date().toISOString(), status: 'open',
       }).select().single();
       if(error){ toast('Error: ' + error.message); return; }
+      clearFormDirty();
       localStorage.setItem('lfd_active_session_id', data.id);
       state.activeJob = job; state.activeSession = data;
       toast('Shift started');
@@ -813,9 +847,9 @@ async function renderHydrantEntry(){
   else if(job.activity_type === 'condition_check') renderConditionCheckForm(main, headerHtml, pending, s, job);
   else renderFlowTestForm(main, headerHtml, pending, s, job);
 
-  document.getElementById('topBackBtn').onclick = renderCompanyHome;
-  document.getElementById('editSessionBtn').onclick = ()=> renderStartShift(null, s);
-  document.getElementById('endBtn').onclick = ()=> openEndShiftModal();
+  document.getElementById('topBackBtn').onclick = ()=> guardNavigate(renderCompanyHome);
+  document.getElementById('editSessionBtn').onclick = ()=> guardNavigate(()=> renderStartShift(null, s));
+  document.getElementById('endBtn').onclick = ()=> guardNavigate(()=> openEndShiftModal());
 }
 
 async function checkDuplicateToday(hydrantId, activityType){
@@ -872,6 +906,8 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
 
   document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'flow_test'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'flow_test'));
+  clearFormDirty();
+  wireDirtyTracking(main);
 
   function calc(){
     const P = parseFloat(document.getElementById('f_pitot').value);
@@ -913,6 +949,7 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
       notes: document.getElementById('f_notes').value || null,
     });
     if(error){ toast('Error: ' + error.message); return; }
+    clearFormDirty();
     toast('Saved — ready for next one');
     renderHydrantEntry();
   };
@@ -943,10 +980,13 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
 
   document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'condition_check'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'condition_check'));
+  clearFormDirty();
+  wireDirtyTracking(main);
 
   main.querySelectorAll('[data-wetdry]').forEach(btn=>{
     btn.onclick = ()=>{
       wetDry = btn.dataset.wetdry;
+      markFormDirty();
       main.querySelectorAll('[data-wetdry]').forEach(b=>{ b.classList.toggle('active', b===btn); b.classList.remove('good','bad'); });
       btn.classList.add(wetDry==='dry' ? 'good' : 'bad');
     };
@@ -954,6 +994,7 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
   main.querySelectorAll('[data-cond]').forEach(btn=>{
     btn.onclick = ()=>{
       condition = btn.dataset.cond;
+      markFormDirty();
       main.querySelectorAll('[data-cond]').forEach(b=>{ b.classList.toggle('active', b===btn); b.classList.remove('good','bad'); });
       btn.classList.add(condition==='good' ? 'good' : 'bad');
       document.getElementById('notesWrap').style.display = (condition==='repair'||condition==='oos') ? 'block' : 'none';
@@ -969,6 +1010,7 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
       notes: document.getElementById('f_notes') ? (document.getElementById('f_notes').value || null) : null,
     });
     if(error){ toast('Error: ' + error.message); return; }
+    clearFormDirty();
     toast('Saved — ready for next one');
     renderHydrantEntry();
   };
@@ -1000,6 +1042,8 @@ function renderSnowRemovalForm(main, headerHtml, pending, s, job){
 
   document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'snow_removal'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'snow_removal'));
+  clearFormDirty();
+  wireDirtyTracking(main);
 
   function updateNotesVisibility(){
     document.getElementById('notesWrap').style.display = (clearedStatus==='not_cleared' || conditionFlag) ? 'block' : 'none';
@@ -1007,6 +1051,7 @@ function renderSnowRemovalForm(main, headerHtml, pending, s, job){
   main.querySelectorAll('[data-cleared]').forEach(btn=>{
     btn.onclick = ()=>{
       clearedStatus = btn.dataset.cleared;
+      markFormDirty();
       main.querySelectorAll('[data-cleared]').forEach(b=>{ b.classList.toggle('active', b===btn); b.classList.remove('good','bad'); });
       btn.classList.add(clearedStatus==='cleared' ? 'good' : 'bad');
       updateNotesVisibility();
@@ -1015,6 +1060,7 @@ function renderSnowRemovalForm(main, headerHtml, pending, s, job){
   main.querySelectorAll('[data-flag]').forEach(btn=>{
     btn.onclick = ()=>{
       conditionFlag = (conditionFlag === btn.dataset.flag) ? null : btn.dataset.flag;
+      markFormDirty();
       main.querySelectorAll('[data-flag]').forEach(b=>{ b.classList.remove('active','bad'); });
       if(conditionFlag){ btn.classList.add('active','bad'); }
       updateNotesVisibility();
@@ -1031,6 +1077,7 @@ function renderSnowRemovalForm(main, headerHtml, pending, s, job){
       notes: document.getElementById('f_notes') ? (document.getElementById('f_notes').value || null) : null,
     });
     if(error){ toast('Error: ' + error.message); return; }
+    clearFormDirty();
     toast('Saved — ready for next one');
     renderHydrantEntry();
   };
@@ -1087,6 +1134,7 @@ function computeHydrantStatus(tests){
   return 'good';
 }
 const STATUS_LABELS = { good:'Good', damaged:'Damaged', oos:'Out of Service' };
+const STATUS_SYMBOLS = { good:'✓', damaged:'!', oos:'✕' };
 
 async function renderMasterHydrantList(opts){
   const isChief = !!opts.isChief;
@@ -1128,8 +1176,8 @@ async function renderMasterHydrantList(opts){
     document.getElementById('mhList').innerHTML = sorted.map(h => {
       const status = computeHydrantStatus(testsByHydrant[h.id] || []);
       return `<div class="status-row" data-hydrant="${h.id}">
-        <span><span class="status-dot ${status}"></span>${esc(h.hydrant_number)} — ${esc(h.address||'')}</span>
-        <span class="status-badge ${status}">${STATUS_LABELS[status]}</span>
+        <span><span class="status-dot ${status}">${STATUS_SYMBOLS[status]}</span>${esc(h.hydrant_number)} — ${esc(h.address||'')}</span>
+        <span class="status-badge ${status}">${STATUS_SYMBOLS[status]} ${STATUS_LABELS[status]}</span>
       </div>`;
     }).join('') || '<div class="hint">No hydrants match.</div>';
     document.querySelectorAll('[data-hydrant]').forEach(row=>{
@@ -1152,7 +1200,7 @@ async function renderHydrantDetail(hydrantId, backTo){
     <div class="card">
       <h3 style="margin-top:0;">${esc(hydrant.hydrant_number)}</h3>
       <div class="hint">${esc(hydrant.address||'')} · ${esc(compName)} · ${esc(divName)}</div>
-      <span class="status-badge ${status}" style="margin-top:10px;">${STATUS_LABELS[status]}</span>
+      <span class="status-badge ${status}" style="margin-top:10px;">${STATUS_SYMBOLS[status]} ${STATUS_LABELS[status]}</span>
       ${(state.isChief && status !== 'good') ? '<button class="secondary" id="repairBtn" style="border-color:var(--ok);color:var(--ok);margin-top:12px;">Mark Repaired — Back In Service</button>' : ''}
     </div>
     <div class="card">
@@ -1184,6 +1232,80 @@ async function renderHydrantDetail(hydrantId, backTo){
 }
 
 // ============================================================
+// STATUS TAB — flagged hydrants only (chief), inline status update
+// ============================================================
+async function updateHydrantCondition(hydrantId, newCondition, refresh){
+  const label = newCondition === 'good' ? 'Good' : (newCondition === 'repair' ? 'Needs Repair' : 'Out of Service');
+  const { error } = await sb.from('hydrant_tests').insert({
+    hydrant_id: hydrantId, session_id: null, condition: newCondition,
+    notes: 'Status updated by chief/admin to ' + label,
+  });
+  if(error){ toast('Error: ' + error.message); return; }
+  toast('Status updated to ' + label);
+  if(refresh) refresh();
+}
+
+async function renderStatusTab(){
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="card">Loading…</div>';
+
+  async function load(){
+    const { data: allTests } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, condition, snow_condition_flag');
+    const testsByHydrant = {};
+    (allTests||[]).forEach(t=>{ (testsByHydrant[t.hydrant_id] = testsByHydrant[t.hydrant_id]||[]).push(t); });
+
+    const flagged = state.hydrants
+      .map(h => ({ h, status: computeHydrantStatus(testsByHydrant[h.id] || []) }))
+      .filter(x => x.status !== 'good');
+
+    flagged.sort((a,b)=>{
+      const an = state.companies.find(c=>c.id===a.h.company_id)?.name || '';
+      const bn = state.companies.find(c=>c.id===b.h.company_id)?.name || '';
+      return compareCompanyNames(an, bn) || a.h.hydrant_number.localeCompare(b.h.hydrant_number, undefined, {numeric:true});
+    });
+
+    main.innerHTML = `
+      <div class="card">
+        <h3 style="margin-top:0;">Flagged Hydrants</h3>
+        <div class="hint" style="margin-bottom:10px;">Everything currently Damaged or Out of Service, department-wide. Wet/Dry doesn't affect this list.</div>
+        ${flagged.length === 0 ? '<div class="hint">Nothing flagged right now — all hydrants Good.</div>' : ''}
+      </div>
+      ${flagged.map(({h, status}) => {
+        const compName = state.companies.find(c=>c.id===h.company_id)?.name || '—';
+        const divName = state.divisions.find(d=>d.id===h.division_id)?.name || '—';
+        return `
+        <div class="card" data-flaggedcard="${h.id}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+            <div>
+              <div style="font-weight:700;font-size:15px;">${esc(h.hydrant_number)}</div>
+              <div class="hint">${esc(h.address||'')} · ${esc(compName)} · ${esc(divName)}</div>
+            </div>
+            <span class="status-badge ${status}">${STATUS_SYMBOLS[status]} ${STATUS_LABELS[status]}</span>
+          </div>
+          <div class="btn-row" style="margin-top:10px;">
+            <button class="small" data-viewhistory="${h.id}">View History</button>
+            ${status !== 'damaged' ? `<button class="small" style="border-color:#8a5a10;color:#8a5a10;" data-setstatus="${h.id}" data-newstatus="repair">Set Damaged</button>` : ''}
+            ${status !== 'oos' ? `<button class="small danger" data-setstatus="${h.id}" data-newstatus="oos">Set OOS</button>` : ''}
+            <button class="small ok" data-setstatus="${h.id}" data-newstatus="good">Mark Repaired</button>
+          </div>
+        </div>`;
+      }).join('')}
+    `;
+
+    main.querySelectorAll('[data-viewhistory]').forEach(btn=>{
+      btn.onclick = ()=> renderHydrantDetail(btn.dataset.viewhistory, ()=>{ state.tab='status'; renderChiefShell(); });
+    });
+    main.querySelectorAll('[data-setstatus]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        if(btn.dataset.newstatus === 'good' && !confirm('Confirm this hydrant has been repaired and is back in service?')) return;
+        await updateHydrantCondition(btn.dataset.setstatus, btn.dataset.newstatus, load);
+      };
+    });
+  }
+  load();
+}
+
+// ============================================================
 // LOG
 // ============================================================
 function isAttentionRow(r){
@@ -1212,6 +1334,10 @@ async function renderLog(){
         </select>
       </div>
       <div class="field"><label>Search Hydrant #</label><input id="filt_search" placeholder="e.g. H-101"></div>
+      <div class="row2">
+        <div class="field"><label>From Date</label><input type="date" id="filt_from"></div>
+        <div class="field"><label>To Date</label><input type="date" id="filt_to"></div>
+      </div>
     </div>
     <div id="logList">Loading…</div>`;
 
@@ -1221,9 +1347,13 @@ async function renderLog(){
     const companyFilter = document.getElementById('filt_company').value;
     const statusFilter = document.getElementById('filt_status').value;
     const search = document.getElementById('filt_search').value.trim().toLowerCase();
+    const fromDate = document.getElementById('filt_from').value;
+    const toDate = document.getElementById('filt_to').value;
     let rows = data || [];
     if(companyFilter) rows = rows.filter(r => r.hydrants && r.hydrants.company_id === companyFilter);
     if(search) rows = rows.filter(r => r.hydrants && r.hydrants.hydrant_number.toLowerCase().includes(search));
+    if(fromDate) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) >= fromDate);
+    if(toDate) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) <= toDate);
     if(statusFilter === 'attention') rows = rows.filter(isAttentionRow);
     else if(statusFilter === 'good') rows = rows.filter(r => r.condition === 'good');
     else if(statusFilter === 'repair') rows = rows.filter(r => r.condition === 'repair');
@@ -1251,6 +1381,8 @@ async function renderLog(){
   }
   ['filt_company','filt_status'].forEach(id => document.getElementById(id).addEventListener('change', load));
   document.getElementById('filt_search').addEventListener('input', load);
+  ['filt_from','filt_to'].forEach(id => document.getElementById(id).addEventListener('change', load));
+  attachDatePicker('filt_from'); attachDatePicker('filt_to');
   load();
 }
 
@@ -2077,6 +2209,9 @@ function renderSettingsTab(){
   };
 }
 
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
 init();
 </script>
 </body>
