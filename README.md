@@ -134,7 +134,54 @@ visibility, stats, and exportable reports/backups.
 - ⏳ Role-based permissions (admin vs. field user) — currently all authenticated
   users have full read/write access; needs tightening before real rollout
 
-## Latest build (this session) — requires migration 009
+## Latest build (this session) — no new SQL, app-level only
+
+- **Master Hydrant List** (replaces the old "District Hydrant Checklist" —
+  same nav entry, same Company/Division/See-All scoping, but now
+  color-coded by actual hydrant condition instead of job-completion
+  checkmarks): 🟢 Good, 🟡 Damaged (but working), 🔴 Out of Service. A
+  hydrant with no entries yet is assumed Good. Status comes from each
+  hydrant's most recent entry that actually specifies a condition or
+  damage flag — wet/dry is intentionally NOT a factor. Visible to
+  everyone (company and chief logins alike).
+- **Hydrant Detail view** — clicking any hydrant (from the Master List)
+  shows its full test history: every static/residual/pitot reading and
+  calculated flow, condition, wet/dry, snow status, and notes, across
+  every activity type, newest first.
+- **"Mark Repaired — Back In Service" is now chief/admin-only**, lives
+  exclusively on the Hydrant Detail view (only shown to chief-level
+  logins, only when status isn't already Good). Removed entirely from
+  the Log's edit-entry modal — there's now one clear path, matching the
+  "confirmed by Water & Sewer" workflow.
+- **Campaigns tab**: "Create Campaign" moved here from Settings (a
+  "+ Create Campaign" button at the top). Open campaigns now also have
+  an **Edit** button — rename, and adjust which companies are scoped in;
+  activity type is locked once created (jobs already reference it).
+- **Reports → Custom Export**: Wet/Dry and Status/Condition switched
+  from dropdowns to multi-select toggle chips with an "All" option, so
+  multiple values (e.g. Needs Repair + OOS together) can be pulled in
+  one export instead of running it repeatedly.
+- **Log's "Needs Attention" default** no longer includes Wet — only
+  genuinely bad statuses (Needs Repair, OOS, Not Cleared, Damaged) show
+  by default now.
+- **Stats**: added a **Today** card matching This Week / This Month
+  (shifts, hours, man-hours, entries). Added **Man-Hours** everywhere
+  hours are shown — crew size × shift duration, summed (OIC counts as
+  part of the crew). **Overdue for Retest** is now a total count + a
+  per-company breakdown table (Engines-first order) instead of a raw
+  hydrant list on screen — the full detailed list still lives in the
+  PDF export, which is now also sorted by company the same way.
+- **Hydrant Entry header** now shows the campaign name (when the job
+  belongs to one) alongside two progress figures: this job's own
+  completion (e.g. "23/46 complete") and the campaign's citywide
+  completion (e.g. "50% — 250/500 complete").
+- **Same-day crew resume prompt**: resuming a job with no currently-open
+  shift now checks whether the last shift under it was closed *today*.
+  If so, a quick prompt offers to continue with the same OIC/crew/
+  division (skipping straight to hydrant entry) or start fresh via the
+  normal Shift Settings screen.
+
+## Previous build — requires migration 009
 
 - **New migration**: `sql/009_campaign_company_scope.sql` — adds
   `campaigns.company_ids` (nullable array) so a manually-created campaign
@@ -184,6 +231,13 @@ visibility, stats, and exportable reports/backups.
 - **Settings → Create Campaign** — manually pre-create a campaign with a
   name, activity type, and a company multi-select that defaults to all
   companies selected (uses the new `company_ids` column).
+
+- **Login fields hardened against browser autofill** — the Company and
+  Password fields use a readonly-until-focus trick plus obscured field
+  names, since `autocomplete="off"` alone doesn't reliably stop browsers
+  from suggesting saved logins or offering to remember the password.
+  Same searchable dropdown+type behavior as before, just no more
+  browser-suggested previous entries.
 
 ## Previous build — no new SQL, app-level only
 
