@@ -71,8 +71,16 @@
   .toggle-btn.active{background:var(--ink);color:#fff;border-color:var(--ink);}
   .toggle-btn.active.good{background:var(--ok);border-color:var(--ok);}
   .toggle-btn.active.bad{background:var(--red-deep);border-color:var(--red-deep);}
-  .checklist-row{display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid var(--line);font-size:13.5px;}
-  .checklist-row.done{color:#9a9488;}
+  .status-row{display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid var(--line);font-size:13.5px;cursor:pointer;}
+  .status-row:active{background:#f1efe8;}
+  .status-dot{width:14px;height:14px;border-radius:50%;flex-shrink:0;margin-right:8px;}
+  .status-dot.good{background:var(--ok);}
+  .status-dot.damaged{background:#e0a52c;}
+  .status-dot.oos{background:var(--red-deep);}
+  .status-badge{display:inline-flex;align-items:center;gap:6px;font-weight:700;padding:4px 10px;border-radius:14px;font-size:12.5px;text-transform:uppercase;}
+  .status-badge.good{background:#e4efe6;color:var(--ok);}
+  .status-badge.damaged{background:#fbf1de;color:#8a5a10;}
+  .status-badge.oos{background:#f5e0de;color:var(--red-deep);}
   .checkmark{width:20px;height:20px;border-radius:50%;border:2px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
   .checkmark.done{background:var(--ok);border-color:var(--ok);color:#fff;}
   .search-results{max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:5px;margin-top:6px;}
@@ -187,7 +195,7 @@ async function loadRefData(){
 function sharedCode(){ return state.settings.shared_company_login_code || 'lfd2026'; }
 
 // ============================================================
-// LOGIN — searchable dropdown, no browser autofill memory
+// LOGIN
 // ============================================================
 function typeaheadHtml(id, placeholder){
   return `
@@ -230,11 +238,23 @@ function renderCompanyLogin(){
     <div class="login-wrap">
       <div class="card">
         <h2 style="margin-top:0;">LFD Hydrant Testing</h2>
-        <div class="field"><label>Company</label>${typeaheadHtml('loginCompany', 'Type or select…')}</div>
-        <div class="field"><label>Password</label><input id="loginPass" type="password" autocomplete="off"></div>
-        <button class="primary" id="loginBtn">Sign In</button>
+        <form autocomplete="off" onsubmit="return false;">
+        <div class="field"><label>Company</label>
+          <div style="position:relative;">
+            <input type="text" id="loginCompany_text" name="lfd_field_a7q" placeholder="Type or select…" autocomplete="off" readonly>
+            <input type="hidden" id="loginCompany_value">
+            <div class="search-results" id="loginCompany_results" style="display:none;position:absolute;left:0;right:0;background:#fff;z-index:5;"></div>
+          </div>
+        </div>
+        <div class="field"><label>Password</label><input id="loginPass" name="lfd_field_p9z" type="password" autocomplete="new-password" readonly></div>
+        <button class="primary" type="button" id="loginBtn">Sign In</button>
+        </form>
       </div>
     </div>`;
+  ['loginCompany_text','loginPass'].forEach(id=>{
+    const el = document.getElementById(id);
+    el.addEventListener('focus', ()=> el.removeAttribute('readonly'));
+  });
   wireTypeahead('loginCompany', state.companies);
   document.getElementById('loginBtn').onclick = async ()=>{
     const idFromClick = document.getElementById('loginCompany_value').value;
@@ -436,7 +456,7 @@ async function renderCompanyHome(){
     </div>
     <div class="card">
       <button class="primary" id="startNewBtn">Start New Job</button>
-      <button class="secondary" id="checklistBtn">District Hydrant Checklist</button>
+      <button class="secondary" id="checklistBtn">Master Hydrant List</button>
     </div>
     ${closedJobs && closedJobs.length ? `
     <div class="card">
@@ -452,7 +472,7 @@ async function renderCompanyHome(){
   `;
 
   document.getElementById('startNewBtn').onclick = renderActivityPicker;
-  document.getElementById('checklistBtn').onclick = ()=> renderDistrictChecklist({ backTo: renderCompanyHome, isChief:false });
+  document.getElementById('checklistBtn').onclick = ()=> renderMasterHydrantList({ backTo: renderCompanyHome, isChief:false });
 
   main.querySelectorAll('[data-resume]').forEach(btn=>{
     btn.onclick = async ()=>{
@@ -464,7 +484,9 @@ async function renderCompanyHome(){
         state.activeSession = openShift;
         localStorage.setItem('lfd_active_session_id', openShift.id);
         renderHydrantEntry();
-      } else { renderStartShift({ job }, null); }
+      } else {
+        offerSameDayCrewResume(job);
+      }
     };
   });
   main.querySelectorAll('[data-endshift]').forEach(btn=>{
@@ -498,6 +520,48 @@ async function renderCompanyHome(){
   });
 }
 
+// ---- Same-day crew resume prompt ----
+async function offerSameDayCrewResume(job){
+  const { data: lastShift } = await sb.from('sessions').select('*')
+    .eq('job_id', job.id).eq('status','closed').order('started_at', {ascending:false}).limit(1).maybeSingle();
+  const todayStr = new Date().toISOString().slice(0,10);
+  if(!lastShift || lastShift.session_date !== todayStr){
+    renderStartShift({ job }, null);
+    return;
+  }
+  const oicName = state.members.find(m=>m.id===lastShift.oic_member_id)?.name || '—';
+  const crewNames = (lastShift.crew_member_ids||[]).map(id=>state.members.find(m=>m.id===id)?.name).filter(Boolean);
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="card modal-card">
+      <h3 style="margin-top:0;">Continue with same crew?</h3>
+      <div class="hint" style="margin-bottom:10px;">This job already had a shift today.</div>
+      <div style="font-size:14px;margin-bottom:14px;"><b>OIC:</b> ${esc(oicName)}<br><b>Crew:</b> ${crewNames.length ? esc(crewNames.join(', ')) : '—'}</div>
+      <button class="primary" id="sameCrewYesBtn">Yes — Continue</button>
+      <button class="secondary" id="sameCrewNoBtn">No — New Shift Details</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('sameCrewYesBtn').onclick = async ()=>{
+    const { data, error } = await sb.from('sessions').insert({
+      job_id: job.id, company_id: job.company_id, activity_type: job.activity_type,
+      division_id: lastShift.division_id, oic_member_id: lastShift.oic_member_id,
+      crew_member_ids: lastShift.crew_member_ids, session_date: todayStr,
+      started_at: new Date().toISOString(), status: 'open',
+    }).select().single();
+    overlay.remove();
+    if(error){ toast('Error: ' + error.message); return; }
+    localStorage.setItem('lfd_active_session_id', data.id);
+    state.activeJob = job; state.activeSession = data;
+    toast('Shift started with same crew');
+    renderHydrantEntry();
+  };
+  document.getElementById('sameCrewNoBtn').onclick = ()=>{
+    overlay.remove();
+    renderStartShift({ job }, null);
+  };
+}
+
 function renderActivityPicker(){
   const main = document.getElementById('main');
   main.innerHTML = backBar('Home', 'topBackBtn') + `
@@ -523,7 +587,7 @@ function renderActivityPicker(){
           localStorage.setItem('lfd_active_session_id', openShift.id);
           toast('An open job for this already exists — resuming it');
           renderHydrantEntry();
-        } else { renderStartShift({ job: existing }, null); }
+        } else { offerSameDayCrewResume(existing); }
       } else { renderStartShift({ activityType }, null); }
     };
   });
@@ -696,11 +760,38 @@ function wireHydrantPicker(afterPick){
   });
 }
 
+async function computeCampaignOverallStats(campaign){
+  const cutoff = new Date(campaign.created_at);
+  const eligibleCompanyIds = (campaign.company_ids && campaign.company_ids.length) ? new Set(campaign.company_ids) : null;
+  const pairsMap = new Map();
+  state.hydrants.forEach(h => {
+    if(!h.company_id || !h.division_id) return;
+    if(eligibleCompanyIds && !eligibleCompanyIds.has(h.company_id)) return;
+    const key = h.company_id+'|'+h.division_id;
+    if(!pairsMap.has(key)) pairsMap.set(key, {companyId:h.company_id, divisionId:h.division_id});
+  });
+  let total = 0, done = 0;
+  for(const {companyId, divisionId} of pairsMap.values()){
+    const r = await computeCompletionForCompanyDivision(companyId, divisionId, campaign.activity_type, cutoff);
+    total += r.total; done += r.completedCount;
+  }
+  return { total, done, pct: total ? Math.round(done/total*100) : 0 };
+}
+
 async function renderHydrantEntry(){
   const s = state.activeSession;
   const job = state.activeJob;
   selectedHydrantId = null;
   const { pending, total, completedCount } = await computeJobPending(job);
+
+  let campaignLine = '';
+  if(job.campaign_id){
+    const { data: campaign } = await sb.from('campaigns').select('*').eq('id', job.campaign_id).single();
+    if(campaign){
+      const overall = await computeCampaignOverallStats(campaign);
+      campaignLine = `<div style="font-size:12.5px;color:var(--steel);margin-top:2px;">Campaign: <b>${esc(campaign.name)}</b> · Citywide: ${overall.pct}% (${overall.done}/${overall.total})</div>`;
+    }
+  }
 
   const main = document.getElementById('main');
   const oicName = state.members.find(m => m.id === s.oic_member_id)?.name || '—';
@@ -710,7 +801,8 @@ async function renderHydrantEntry(){
     <div class="card" style="background:#f1efe8;">
       <div style="font-size:13px;"><b>${esc(state.company.name)} · ${esc(ACTIVITY_LABELS[job.activity_type])}</b> — job open since ${fmtDate(job.created_at)}</div>
       <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This shift started ${fmtDateTime(s.started_at)} · OIC: ${esc(oicName)} · Division: ${esc(divisionName)} · Crew: ${(s.crew_member_ids||[]).length}</div>
-      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">${completedCount} of ${total} hydrants complete for this job</div>
+      <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This job: ${completedCount}/${total} complete</div>
+      ${campaignLine}
       <div class="shift-actions">
         <button type="button" class="small neutral" id="editSessionBtn">Shift Settings</button>
         <button type="button" class="small danger" id="endBtn">End Shift</button>
@@ -984,65 +1076,118 @@ function openEndShiftModal(){
 }
 
 // ============================================================
-// DISTRICT CHECKLIST — scoped by default, dropdowns to widen, "See All"
+// MASTER HYDRANT LIST — status color-coded, click for history, chief-only repair
 // ============================================================
-async function renderDistrictChecklist(opts){
+function computeHydrantStatus(tests){
+  const relevant = tests.filter(t => t.condition || t.snow_condition_flag).sort((a,b)=> new Date(b.tested_at)-new Date(a.tested_at));
+  if(!relevant.length) return 'good';
+  const latest = relevant[0];
+  if(latest.condition==='oos' || latest.snow_condition_flag==='oos') return 'oos';
+  if(latest.condition==='repair' || latest.snow_condition_flag==='damaged') return 'damaged';
+  return 'good';
+}
+const STATUS_LABELS = { good:'Good', damaged:'Damaged', oos:'Out of Service' };
+
+async function renderMasterHydrantList(opts){
   const isChief = !!opts.isChief;
   let selCompany = isChief ? '' : state.company.id;
   let selDivision = isChief ? '' : state.division.id;
   const main = document.getElementById('main');
 
+  const { data: allTests } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, condition, snow_condition_flag');
+  const testsByHydrant = {};
+  (allTests||[]).forEach(t=>{ (testsByHydrant[t.hydrant_id] = testsByHydrant[t.hydrant_id]||[]).push(t); });
+
   function render(){
     main.innerHTML = backBar('Back', 'topBackBtn') + `
       <div class="card">
-        <h3 style="margin-top:0;">District Hydrant Checklist</h3>
+        <h3 style="margin-top:0;">Master Hydrant List</h3>
         <div class="row2">
           <div class="field"><label>Company</label>
-            <select id="chkCompany"><option value="">All Companies</option>${state.companies.map(c=>`<option value="${c.id}" ${selCompany===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
+            <select id="mhCompany"><option value="">All Companies</option>${state.companies.map(c=>`<option value="${c.id}" ${selCompany===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
           </div>
           <div class="field"><label>Division</label>
-            <select id="chkDivision"><option value="">All Divisions</option>${state.divisions.map(d=>`<option value="${d.id}" ${selDivision===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
+            <select id="mhDivision"><option value="">All Divisions</option>${state.divisions.map(d=>`<option value="${d.id}" ${selDivision===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
           </div>
         </div>
-        <div class="field"><label>Activity</label>
-          <select id="chkActivity"><option value="flow_test">Flow Test</option><option value="condition_check">Condition Check</option><option value="snow_removal">Snow Removal</option></select>
-        </div>
         <button class="secondary" id="seeAllBtn">See All Hydrants (Citywide)</button>
-        <div id="chkList" style="margin-top:10px;">Loading…</div>
+        <div id="mhList" style="margin-top:10px;"></div>
       </div>`;
     document.getElementById('topBackBtn').onclick = opts.backTo;
-    document.getElementById('chkCompany').addEventListener('change', (e)=>{ selCompany = e.target.value; load(); });
-    document.getElementById('chkDivision').addEventListener('change', (e)=>{ selDivision = e.target.value; load(); });
-    document.getElementById('chkActivity').addEventListener('change', load);
+    document.getElementById('mhCompany').addEventListener('change', (e)=>{ selCompany = e.target.value; renderList(); });
+    document.getElementById('mhDivision').addEventListener('change', (e)=>{ selDivision = e.target.value; renderList(); });
     document.getElementById('seeAllBtn').onclick = ()=>{ selCompany=''; selDivision=''; render(); };
-    load();
+    renderList();
   }
 
-  async function load(){
-    const activityType = document.getElementById('chkActivity').value;
-    const { data } = await sb.from('hydrant_tests').select('hydrant_id, sessions(activity_type)');
-    const doneIds = new Set((data||[]).filter(r => r.sessions && r.sessions.activity_type === activityType).map(r=>r.hydrant_id));
+  function renderList(){
     let hydrants = state.hydrants;
     if(selCompany) hydrants = hydrants.filter(h=>h.company_id===selCompany);
     if(selDivision) hydrants = hydrants.filter(h=>h.division_id===selDivision);
     const sorted = [...hydrants].sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
-    document.getElementById('chkList').innerHTML = sorted.map(h => {
-      const compName = state.companies.find(c=>c.id===h.company_id)?.name || '—';
-      const divName = state.divisions.find(d=>d.id===h.division_id)?.name || '—';
-      return `<div class="checklist-row ${doneIds.has(h.id)?'done':''}">
-        <span>${esc(h.hydrant_number)} — ${esc(h.address||'')} <span class="hint" style="display:inline;">(${esc(compName)} · ${esc(divName)})</span></span>
-        <span class="checkmark ${doneIds.has(h.id)?'done':''}">${doneIds.has(h.id)?'✓':''}</span>
+    document.getElementById('mhList').innerHTML = sorted.map(h => {
+      const status = computeHydrantStatus(testsByHydrant[h.id] || []);
+      return `<div class="status-row" data-hydrant="${h.id}">
+        <span><span class="status-dot ${status}"></span>${esc(h.hydrant_number)} — ${esc(h.address||'')}</span>
+        <span class="status-badge ${status}">${STATUS_LABELS[status]}</span>
       </div>`;
     }).join('') || '<div class="hint">No hydrants match.</div>';
+    document.querySelectorAll('[data-hydrant]').forEach(row=>{
+      row.onclick = ()=> renderHydrantDetail(row.dataset.hydrant, ()=>render());
+    });
   }
   render();
 }
 
+async function renderHydrantDetail(hydrantId, backTo){
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="card">Loading…</div>';
+  const hydrant = state.hydrants.find(h=>h.id===hydrantId);
+  const { data: tests } = await sb.from('hydrant_tests').select('*, sessions(activity_type, session_date)').eq('hydrant_id', hydrantId).order('tested_at', {ascending:false});
+  const status = computeHydrantStatus(tests||[]);
+  const compName = state.companies.find(c=>c.id===hydrant.company_id)?.name || '—';
+  const divName = state.divisions.find(d=>d.id===hydrant.division_id)?.name || '—';
+
+  main.innerHTML = backBar('Back', 'topBackBtn') + `
+    <div class="card">
+      <h3 style="margin-top:0;">${esc(hydrant.hydrant_number)}</h3>
+      <div class="hint">${esc(hydrant.address||'')} · ${esc(compName)} · ${esc(divName)}</div>
+      <span class="status-badge ${status}" style="margin-top:10px;">${STATUS_LABELS[status]}</span>
+      ${(state.isChief && status !== 'good') ? '<button class="secondary" id="repairBtn" style="border-color:var(--ok);color:var(--ok);margin-top:12px;">Mark Repaired — Back In Service</button>' : ''}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Test History</h3>
+      ${(tests||[]).length === 0 ? '<div class="hint">No entries yet.</div>' : (tests||[]).map(t => `
+        <div class="entry" style="cursor:default;">
+          <div class="entry-top"><span>${esc(ACTIVITY_LABELS[t.sessions?.activity_type] || '—')}</span><span>${fmtDate(t.tested_at)}</span></div>
+          ${t.static_psi!=null ? `<div style="font-size:13px;">Static ${t.static_psi} · Residual ${t.residual_psi} · Pitot ${t.pitot_psi} · Flow ${t.flow_gpm??'—'} gpm · @20psi ${t.flow_at_20psi??'—'} gpm</div>` : ''}
+          ${t.condition ? `<span class="tag ${t.condition==='good'?'tag-good':'tag-bad'}">${t.condition==='good'?'Good':(t.condition==='repair'?'Needs Repair':'OOS')}</span>` : ''}
+          ${t.wet_dry ? `<span class="tag ${t.wet_dry==='dry'?'tag-good':'tag-bad'}">${t.wet_dry==='dry'?'Dry':'Wet'}</span>` : ''}
+          ${t.snow_cleared_status ? `<span class="tag ${t.snow_cleared_status==='cleared'?'tag-good':'tag-bad'}">${t.snow_cleared_status==='cleared'?'Cleared':'Not Cleared'}</span>` : ''}
+          ${t.snow_condition_flag ? `<span class="tag tag-bad">${esc(t.snow_condition_flag)}</span>` : ''}
+          ${t.notes ? `<div style="font-size:12.5px;font-style:italic;color:var(--steel);margin-top:4px;">"${esc(t.notes)}"</div>` : ''}
+        </div>`).join('')}
+    </div>`;
+
+  document.getElementById('topBackBtn').onclick = backTo;
+  const repairBtn = document.getElementById('repairBtn');
+  if(repairBtn) repairBtn.onclick = async ()=>{
+    if(!confirm('Confirm this hydrant has been repaired and is back in service?')) return;
+    const { error } = await sb.from('hydrant_tests').insert({
+      hydrant_id: hydrantId, session_id: null, condition: 'good',
+      notes: 'Marked repaired / back in service',
+    });
+    if(error){ toast('Error: ' + error.message); return; }
+    toast('Marked back in service');
+    renderHydrantDetail(hydrantId, backTo);
+  };
+}
+
 // ============================================================
-// LOG — clickable entries, colored tags, smart default filter, repair action
+// LOG
 // ============================================================
 function isAttentionRow(r){
-  return r.condition === 'repair' || r.condition === 'oos' || r.wet_dry === 'wet' ||
+  return r.condition === 'repair' || r.condition === 'oos' ||
     r.snow_cleared_status === 'not_cleared' || !!r.snow_condition_flag;
 }
 async function renderLog(){
@@ -1113,7 +1258,6 @@ async function openEditLogEntryModal(entryId, onSaved){
   const { data: row } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number,address), sessions(activity_type)').eq('id', entryId).single();
   if(!row){ toast('Entry not found'); return; }
   const activityType = row.sessions?.activity_type || 'flow_test';
-  const isBad = row.condition === 'repair' || row.condition === 'oos' || row.snow_condition_flag || row.snow_cleared_status === 'not_cleared';
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
 
@@ -1181,7 +1325,6 @@ async function openEditLogEntryModal(entryId, onSaved){
       <div class="hint" style="margin-bottom:10px;">${esc(row.hydrants?.address||'')} · ${esc(ACTIVITY_LABELS[activityType])} · ${fmtDate(row.tested_at)}</div>
       ${bodyHtml}
       <button class="primary" id="saveEditBtn">Save Changes</button>
-      ${isBad ? '<button class="secondary" id="markRepairedBtn" style="border-color:var(--ok);color:var(--ok);">Mark Repaired — Back In Service</button>' : ''}
       <button class="secondary" id="cancelEditBtn">Cancel</button>
     </div>`;
   document.body.appendChild(overlay);
@@ -1244,27 +1387,32 @@ async function openEditLogEntryModal(entryId, onSaved){
     overlay.remove();
     if(onSaved) onSaved();
   };
-
-  const repairBtn = document.getElementById('markRepairedBtn');
-  if(repairBtn) repairBtn.onclick = async ()=>{
-    let repairPayload = { hydrant_id: row.hydrant_id, session_id: null, notes: 'Marked repaired / back in service' };
-    if(activityType === 'snow_removal'){
-      repairPayload.snow_cleared_status = 'cleared'; repairPayload.snow_condition_flag = null;
-    } else {
-      repairPayload.condition = 'good'; repairPayload.wet_dry = row.wet_dry || null;
-    }
-    const { error } = await sb.from('hydrant_tests').insert(repairPayload);
-    if(error){ toast('Error: ' + error.message); return; }
-    toast('Marked repaired — new entry logged');
-    overlay.remove();
-    if(onSaved) onSaved();
-  };
 }
 
 // ============================================================
-// STATS — operational/time focus + overdue PDF
+// STATS — Today/Week/Month, Man-Hours, condensed Overdue + PDF
 // ============================================================
 let lastOverdueList = [];
+function periodStats(sessions, tests, from){
+  const s = sessions.filter(x => new Date(x.started_at) >= from);
+  const minutes = s.reduce((sum,x)=>sum+(x.total_minutes||0),0);
+  const manMinutes = s.reduce((sum,x)=>{
+    const people = (x.crew_member_ids||[]).length + (x.oic_member_id?1:0);
+    return sum + people*(x.total_minutes||0);
+  },0);
+  const entries = tests.filter(x => new Date(x.tested_at) >= from).length;
+  return { shifts: s.length, hours: Math.round(minutes/60), manHours: Math.round(manMinutes/60), entries };
+}
+function statCard(title, stats){
+  return `<div class="card"><h3 style="margin-top:0;">${esc(title)}</h3>
+    <div class="stat-grid">
+      <div class="stat"><div class="n">${stats.shifts}</div><div class="l">Shifts</div></div>
+      <div class="stat"><div class="n">${stats.hours}</div><div class="l">Hours</div></div>
+      <div class="stat"><div class="n">${stats.manHours}</div><div class="l">Man-Hours</div></div>
+      <div class="stat"><div class="n">${stats.entries}</div><div class="l">Entries Logged</div></div>
+    </div></div>`;
+}
+
 async function renderStats(){
   const main = document.getElementById('main');
   main.innerHTML = 'Loading…';
@@ -1275,16 +1423,13 @@ async function renderStats(){
   ]);
   const t = tests || [], s = sessions || [], h = hydrants || [];
   const now = new Date();
+  const startOfToday = new Date(now); startOfToday.setHours(0,0,0,0);
   const startOfWeek = new Date(now); startOfWeek.setDate(now.getDate() - now.getDay()); startOfWeek.setHours(0,0,0,0);
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  const weekShifts = s.filter(x => new Date(x.started_at) >= startOfWeek);
-  const monthShifts = s.filter(x => new Date(x.started_at) >= startOfMonth);
-  const weekMinutes = weekShifts.reduce((sum,x)=>sum+(x.total_minutes||0),0);
-  const monthMinutes = monthShifts.reduce((sum,x)=>sum+(x.total_minutes||0),0);
-  const weekEntries = t.filter(x => new Date(x.tested_at) >= startOfWeek).length;
-  const todayStr = now.toISOString().slice(0,10);
-  const todayEntries = t.filter(x => x.tested_at && x.tested_at.slice(0,10) === todayStr).length;
+  const today = periodStats(s, t, startOfToday);
+  const week = periodStats(s, t, startOfWeek);
+  const month = periodStats(s, t, startOfMonth);
 
   const lastTestByHydrant = {};
   t.forEach(x => {
@@ -1298,39 +1443,42 @@ async function renderStats(){
     const dueDate = new Date(last); dueDate.setMonth(dueDate.getMonth() + months);
     return dueDate < now;
   });
-  lastOverdueList = overdue;
+  lastOverdueList = [...overdue].sort((a,b)=>{
+    const an = state.companies.find(c=>c.id===a.company_id)?.name || '';
+    const bn = state.companies.find(c=>c.id===b.company_id)?.name || '';
+    return compareCompanyNames(an, bn);
+  });
+  const overdueByCompany = {};
+  overdue.forEach(hy=>{
+    const name = state.companies.find(c=>c.id===hy.company_id)?.name || 'Unassigned';
+    overdueByCompany[name] = (overdueByCompany[name]||0)+1;
+  });
+  const overdueRows = Object.entries(overdueByCompany).sort((a,b)=>compareCompanyNames(a[0],b[0]));
 
   const hoursByCompany = {};
-  monthShifts.forEach(sess => {
+  const manHoursByCompany = {};
+  month.shifts && s.filter(x=>new Date(x.started_at)>=startOfMonth).forEach(sess => {
     const name = state.companies.find(c=>c.id===sess.company_id)?.name || 'Unknown';
     hoursByCompany[name] = (hoursByCompany[name]||0) + (sess.total_minutes||0);
+    const people = (sess.crew_member_ids||[]).length + (sess.oic_member_id?1:0);
+    manHoursByCompany[name] = (manHoursByCompany[name]||0) + people*(sess.total_minutes||0);
   });
-  const hoursRows = Object.entries(hoursByCompany).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const hoursRows = Object.keys(hoursByCompany).sort(compareCompanyNames).map(name=>[name, hoursByCompany[name], manHoursByCompany[name]||0]);
 
   main.innerHTML = `
+    ${statCard('Today', today)}
+    ${statCard('This Week', week)}
+    ${statCard('This Month', month)}
     <div class="card">
-      <h3 style="margin-top:0;">This Week</h3>
-      <div class="stat-grid">
-        <div class="stat"><div class="n">${weekShifts.length}</div><div class="l">Shifts</div></div>
-        <div class="stat"><div class="n">${Math.round(weekMinutes/60)}</div><div class="l">Hours</div></div>
-        <div class="stat"><div class="n">${weekEntries}</div><div class="l">Entries Logged</div></div>
-        <div class="stat"><div class="n">${todayEntries}</div><div class="l">Logged Today</div></div>
-      </div>
+      <h3 style="margin-top:0;">Hours &amp; Man-Hours by Company (this month)</h3>
+      ${hoursRows.length ? `<table class="report"><thead><tr><th>Company</th><th>Hours</th><th>Man-Hours</th></tr></thead><tbody>${hoursRows.map(([name,mins,manMins])=>`<tr><td>${esc(name)}</td><td>${(mins/60).toFixed(1)}</td><td>${(manMins/60).toFixed(1)}</td></tr>`).join('')}</tbody></table>` : '<div class="hint">No shifts logged this month yet.</div>'}
     </div>
     <div class="card">
-      <h3 style="margin-top:0;">This Month</h3>
-      <div class="stat-grid">
-        <div class="stat"><div class="n">${monthShifts.length}</div><div class="l">Shifts</div></div>
-        <div class="stat"><div class="n">${Math.round(monthMinutes/60)}</div><div class="l">Hours</div></div>
-        <div class="stat"><div class="n overdue">${overdue.length}</div><div class="l">Hydrants Overdue</div></div>
-        <div class="stat"><div class="n">${t.length}</div><div class="l">All-Time Entries</div></div>
-      </div>
+      <h3 style="margin-top:0;">Overdue for Retest</h3>
+      <div style="font-size:20px;font-weight:700;" class="${overdue.length?'overdue':''}">${overdue.length} total</div>
+      ${overdueRows.length ? `<table class="report" style="margin-top:8px;"><thead><tr><th>Company</th><th>Outstanding</th></tr></thead><tbody>${overdueRows.map(([name,count])=>`<tr><td>${esc(name)}</td><td>${count}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${overdue.length ? '<button class="secondary" id="overduePdfBtn">Download Full List (PDF)</button>' : ''}
     </div>
-    <div class="card">
-      <h3 style="margin-top:0;">Hours by Company (this month)</h3>
-      ${hoursRows.length ? `<table class="report"><thead><tr><th>Company</th><th>Hours</th></tr></thead><tbody>${hoursRows.map(([name,mins])=>`<tr><td>${esc(name)}</td><td>${(mins/60).toFixed(1)}</td></tr>`).join('')}</tbody></table>` : '<div class="hint">No shifts logged this month yet.</div>'}
-    </div>
-    ${overdue.length ? `<div class="card"><b>Overdue for retest:</b><br>${overdue.map(hy=>esc(hy.hydrant_number)).join(', ')}<button class="secondary" id="overduePdfBtn" style="margin-top:10px;">Download Overdue List (PDF)</button></div>` : ''}
   `;
   const pdfBtn = document.getElementById('overduePdfBtn');
   if(pdfBtn) pdfBtn.onclick = ()=>{
@@ -1346,7 +1494,7 @@ async function renderStats(){
 }
 
 // ============================================================
-// CHIEF: CAMPAIGNS (with year/activity filters, %/flag counts, close)
+// CHIEF: CAMPAIGNS — create/edit moved here, %/flag counts, close
 // ============================================================
 let campaignYearFilter = '';
 let campaignActivityFilter = '';
@@ -1372,7 +1520,73 @@ async function computeCampaignQuickStats(campaign, allTests){
   const pct = totalHydrants ? Math.round(doneIds.size / totalHydrants * 100) : 0;
   const damaged = relevant.filter(t=>t.snow_condition_flag==='damaged').length;
   const oos = relevant.filter(t=>t.condition==='oos' || t.snow_condition_flag==='oos').length;
-  return { pct, damaged, oos };
+  return { pct, damaged, oos, total: totalHydrants, done: doneIds.size };
+}
+
+function openCampaignFormModal(existingCampaign, onSaved){
+  const isEdit = !!existingCampaign;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  let selectedAll = isEdit ? !(existingCampaign.company_ids && existingCampaign.company_ids.length) : true;
+  let selectedIds = new Set(isEdit && existingCampaign.company_ids ? existingCampaign.company_ids : state.companies.map(c=>c.id));
+
+  overlay.innerHTML = `
+    <div class="card modal-card">
+      <h3 style="margin-top:0;">${isEdit ? 'Edit Campaign' : 'Create Campaign'}</h3>
+      <div class="field"><label>Name ${isEdit?'':'(optional — auto-generated if blank)'}</label><input type="text" id="cf_name" value="${isEdit ? esc(existingCampaign.name) : ''}"></div>
+      <div class="field"><label>Activity</label>
+        <select id="cf_activity" ${isEdit ? 'disabled' : ''}>
+          <option value="flow_test" ${(isEdit?existingCampaign.activity_type:'flow_test')==='flow_test'?'selected':''}>Flow Test</option>
+          <option value="condition_check" ${isEdit && existingCampaign.activity_type==='condition_check'?'selected':''}>Condition Check</option>
+          <option value="snow_removal" ${isEdit && existingCampaign.activity_type==='snow_removal'?'selected':''}>Snow Removal</option>
+        </select>
+        ${isEdit ? '<div class="hint">Activity type cannot change once jobs are linked to this campaign.</div>' : ''}
+      </div>
+      <div class="field"><label>Companies (defaults to all)</label>
+        <div class="chip-grid" id="cf_companies">
+          <div class="chip ${selectedAll?'active':''}" data-cf-all="1">All Companies</div>
+          ${state.companies.map(c=>`<div class="chip ${selectedIds.has(c.id)?'active':''}" data-cf-company="${c.id}">${esc(c.name)}</div>`).join('')}
+        </div>
+      </div>
+      <button class="primary" id="cfSaveBtn">${isEdit ? 'Save Changes' : 'Create Campaign'}</button>
+      <button class="secondary" id="cfCancelBtn">Cancel</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('cfCancelBtn').onclick = ()=> overlay.remove();
+
+  overlay.querySelectorAll('[data-cf-all]').forEach(el=>{
+    el.onclick = ()=>{
+      selectedAll = true; selectedIds = new Set(state.companies.map(c=>c.id));
+      overlay.querySelectorAll('#cf_companies .chip').forEach(c=>c.classList.add('active'));
+    };
+  });
+  overlay.querySelectorAll('[data-cf-company]').forEach(el=>{
+    el.onclick = ()=>{
+      const id = el.dataset.cfCompany;
+      if(selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+      selectedAll = selectedIds.size === state.companies.length;
+      el.classList.toggle('active', selectedIds.has(id));
+      overlay.querySelector('[data-cf-all]').classList.toggle('active', selectedAll);
+    };
+  });
+
+  document.getElementById('cfSaveBtn').onclick = async ()=>{
+    const activityType = document.getElementById('cf_activity').value;
+    let name = document.getElementById('cf_name').value.trim();
+    if(!name) name = ACTIVITY_LABELS[activityType] + ' — started ' + new Date().toLocaleDateString([], {month:'long', year:'numeric'});
+    const companyIds = selectedAll ? null : Array.from(selectedIds);
+    if(isEdit){
+      const { error } = await sb.from('campaigns').update({ name, company_ids: companyIds }).eq('id', existingCampaign.id);
+      if(error){ toast('Error: ' + error.message); return; }
+      toast('Campaign updated');
+    } else {
+      const { error } = await sb.from('campaigns').insert({ name, activity_type: activityType, status:'open', company_ids: companyIds });
+      if(error){ toast('Error: ' + error.message); return; }
+      toast('Campaign created');
+    }
+    overlay.remove();
+    if(onSaved) onSaved();
+  };
 }
 
 async function renderCampaignsTab(){
@@ -1395,6 +1609,9 @@ async function renderCampaignsTab(){
 
   main.innerHTML = `
     <div class="card">
+      <button class="primary" id="newCampaignBtn">+ Create Campaign</button>
+    </div>
+    <div class="card">
       <div class="row2">
         <div class="field"><label>Year</label><select id="yearFilter"><option value="">All</option>${years.map(y=>`<option value="${y}" ${campaignYearFilter==String(y)?'selected':''}>${y}</option>`).join('')}</select></div>
         <div class="field"><label>Activity</label><select id="activityFilter"><option value="">All</option><option value="flow_test" ${campaignActivityFilter==='flow_test'?'selected':''}>Flow Test</option><option value="condition_check" ${campaignActivityFilter==='condition_check'?'selected':''}>Condition Check</option><option value="snow_removal" ${campaignActivityFilter==='snow_removal'?'selected':''}>Snow Removal</option></select></div>
@@ -1411,7 +1628,10 @@ async function renderCampaignsTab(){
             <div class="progress-bar"><div class="fill" style="width:${st.pct}%;"></div></div>
             <div style="font-size:13px;font-weight:600;">${st.pct}% complete · Damaged – ${st.damaged}, OOS – ${st.oos}</div>
           </div>
-          <button class="small danger" style="width:100%;margin-top:8px;" data-quickclose="${c.id}">Close Campaign</button>
+          <div class="btn-row" style="margin-top:8px;">
+            <button class="small neutral" data-editcamp="${c.id}">Edit</button>
+            <button class="small danger" data-quickclose="${c.id}">Close Campaign</button>
+          </div>
         </div>`;
       }).join('')}
     </div>
@@ -1423,9 +1643,17 @@ async function renderCampaignsTab(){
         </div>`).join('')}
     </div>
   `;
+  document.getElementById('newCampaignBtn').onclick = ()=> openCampaignFormModal(null, renderCampaignsTab);
   document.getElementById('yearFilter').addEventListener('change', (e)=>{ campaignYearFilter = e.target.value; renderCampaignsTab(); });
   document.getElementById('activityFilter').addEventListener('change', (e)=>{ campaignActivityFilter = e.target.value; renderCampaignsTab(); });
   main.querySelectorAll('[data-campaign]').forEach(row=>{ row.onclick = ()=> renderCampaignDetail(row.dataset.campaign); });
+  main.querySelectorAll('[data-editcamp]').forEach(btn=>{
+    btn.onclick = async (e)=>{
+      e.stopPropagation();
+      const { data: campaign } = await sb.from('campaigns').select('*').eq('id', btn.dataset.editcamp).single();
+      openCampaignFormModal(campaign, renderCampaignsTab);
+    };
+  });
   main.querySelectorAll('[data-quickclose]').forEach(btn=>{
     btn.onclick = async (e)=>{
       e.stopPropagation();
@@ -1480,7 +1708,7 @@ async function renderCampaignDetail(campaignId){
       <div class="progress-bar"><div class="fill" style="width:${overallPct}%;"></div></div>
       <div style="font-size:14px;font-weight:700;">${overallPct}% complete (${totalDone} of ${totalHydrants} hydrants) · ${thisWeekCount} tested this week</div>
       <div class="btn-row" style="margin-top:10px;">
-        <button class="small" id="renameBtn">Rename</button>
+        <button class="small" id="editCampBtn">Edit</button>
         ${campaign.status==='open' ? '<button class="small danger" id="closeCampBtn">Close Campaign</button>' : '<button class="small ok" id="reopenCampBtn">Reopen Campaign</button>'}
         <button class="small neutral" id="exportCsvBtn">Export CSV</button>
         <button class="small neutral" id="exportPdfBtn">Export PDF</button>
@@ -1493,13 +1721,7 @@ async function renderCampaignDetail(campaignId){
     </div>`;
 
   document.getElementById('topBackBtn').onclick = renderCampaignsTab;
-  document.getElementById('renameBtn').onclick = async ()=>{
-    const newName = prompt('Campaign name:', campaign.name);
-    if(newName && newName.trim()){
-      await sb.from('campaigns').update({ name: newName.trim() }).eq('id', campaignId);
-      renderCampaignDetail(campaignId);
-    }
-  };
+  document.getElementById('editCampBtn').onclick = ()=> openCampaignFormModal(campaign, ()=>renderCampaignDetail(campaignId));
   const closeBtn = document.getElementById('closeCampBtn');
   if(closeBtn) closeBtn.onclick = async ()=>{
     if(!confirm('Close this campaign? End date will be set to the last actual hydrant entry.')) return;
@@ -1554,11 +1776,13 @@ async function renderCampaignDetail(campaignId){
 }
 
 // ============================================================
-// CHIEF: REPORTS — filter-and-export only, no browsable table
+// CHIEF: REPORTS — filter-and-export only, chip-based multi-select filters
 // ============================================================
 let reportFlaggedOnly = false;
 let reportSelectedCompanyIds = new Set();
 let reportActivityFilter = 'flow_test';
+let exportWetDrySelected = new Set();
+let exportStatusSelected = new Set();
 
 async function renderReportsTab(){
   const main = document.getElementById('main');
@@ -1576,7 +1800,7 @@ async function renderReportsTab(){
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-top:4px;">
         <input type="checkbox" id="flaggedOnly" style="width:auto;" ${reportFlaggedOnly?'checked':''}> Flagged only
       </label>
-      <button class="secondary" id="checklistBtnChief" style="margin-top:10px;">District Hydrant Checklist</button>
+      <button class="secondary" id="checklistBtnChief" style="margin-top:10px;">Master Hydrant List</button>
     </div>
     <div class="card" id="reportSummary">Loading…</div>
     <div class="card">
@@ -1585,9 +1809,23 @@ async function renderReportsTab(){
         <div class="field"><label>From Date</label><input type="date" id="csv_from"></div>
         <div class="field"><label>To Date</label><input type="date" id="csv_to"></div>
       </div>
-      <div class="field"><label>Wet / Dry</label><select id="csv_wetdry"><option value="">All</option><option value="wet">Wet</option><option value="dry">Dry</option></select></div>
+      <div class="field"><label>Wet / Dry</label>
+        <div class="chip-grid" id="wetDryChips">
+          <div class="chip ${exportWetDrySelected.size===0?'active':''}" data-wd-all="1">All</div>
+          <div class="chip ${exportWetDrySelected.has('wet')?'active':''}" data-wd="wet">Wet</div>
+          <div class="chip ${exportWetDrySelected.has('dry')?'active':''}" data-wd="dry">Dry</div>
+        </div>
+      </div>
       <div class="field"><label>Status / Condition</label>
-        <select id="csv_status"><option value="">All</option><option value="good">Good</option><option value="repair">Needs Repair</option><option value="oos">Out of Service</option><option value="cleared">Cleared</option><option value="not_cleared">Not Cleared</option><option value="damaged">Damaged (flag)</option></select>
+        <div class="chip-grid" id="statusChips">
+          <div class="chip ${exportStatusSelected.size===0?'active':''}" data-st-all="1">All</div>
+          <div class="chip ${exportStatusSelected.has('good')?'active':''}" data-st="good">Good</div>
+          <div class="chip ${exportStatusSelected.has('repair')?'active':''}" data-st="repair">Needs Repair</div>
+          <div class="chip ${exportStatusSelected.has('oos')?'active':''}" data-st="oos">Out of Service</div>
+          <div class="chip ${exportStatusSelected.has('cleared')?'active':''}" data-st="cleared">Cleared</div>
+          <div class="chip ${exportStatusSelected.has('not_cleared')?'active':''}" data-st="not_cleared">Not Cleared</div>
+          <div class="chip ${exportStatusSelected.has('damaged')?'active':''}" data-st="damaged">Damaged</div>
+        </div>
       </div>
       <button class="primary" id="csvExportBtn">Generate CSV</button>
       <button class="secondary" id="pdfExportBtn">Generate PDF</button>
@@ -1604,9 +1842,27 @@ async function renderReportsTab(){
   });
   main.querySelectorAll('[data-activity]').forEach(el=>{ el.onclick = ()=>{ reportActivityFilter = el.dataset.activity; renderReportsTab(); }; });
   document.getElementById('flaggedOnly').addEventListener('change', (e)=>{ reportFlaggedOnly = e.target.checked; loadReportSummary(); });
+
+  main.querySelectorAll('[data-wd-all]').forEach(el=>{ el.onclick = ()=>{ exportWetDrySelected = new Set(); renderReportsTab(); }; });
+  main.querySelectorAll('[data-wd]').forEach(el=>{
+    el.onclick = ()=>{
+      const v = el.dataset.wd;
+      if(exportWetDrySelected.has(v)) exportWetDrySelected.delete(v); else exportWetDrySelected.add(v);
+      renderReportsTab();
+    };
+  });
+  main.querySelectorAll('[data-st-all]').forEach(el=>{ el.onclick = ()=>{ exportStatusSelected = new Set(); renderReportsTab(); }; });
+  main.querySelectorAll('[data-st]').forEach(el=>{
+    el.onclick = ()=>{
+      const v = el.dataset.st;
+      if(exportStatusSelected.has(v)) exportStatusSelected.delete(v); else exportStatusSelected.add(v);
+      renderReportsTab();
+    };
+  });
+
   document.getElementById('csvExportBtn').onclick = generateCustomCsv;
   document.getElementById('pdfExportBtn').onclick = generateCustomPdf;
-  document.getElementById('checklistBtnChief').onclick = ()=> renderDistrictChecklist({ backTo: ()=>{ state.tab='reports'; renderChiefShell(); }, isChief:true });
+  document.getElementById('checklistBtnChief').onclick = ()=> renderMasterHydrantList({ backTo: ()=>{ state.tab='reports'; renderChiefShell(); }, isChief:true });
 
   loadReportSummary();
 }
@@ -1629,7 +1885,7 @@ async function loadReportSummary(){
 
   let rows = hydrants.map(h => {
     const t = latestByHydrant[h.id];
-    const flagged = t && (t.condition==='repair' || t.condition==='oos' || t.snow_condition_flag || t.snow_cleared_status==='not_cleared' || t.wet_dry==='wet');
+    const flagged = t && (t.condition==='repair' || t.condition==='oos' || t.snow_condition_flag || t.snow_cleared_status==='not_cleared');
     return { flagged, wet: t?.wet_dry === 'wet', neverTested: !t };
   });
   if(reportFlaggedOnly) rows = rows.filter(r => r.flagged);
@@ -1654,16 +1910,14 @@ async function loadReportSummary(){
 async function fetchExportRows(){
   const from = document.getElementById('csv_from').value;
   const to = document.getElementById('csv_to').value;
-  const wetDry = document.getElementById('csv_wetdry').value;
-  const status = document.getElementById('csv_status').value;
   const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, division_id), sessions(activity_type, session_date, company_id, division_id)');
   let rows = data || [];
   if(from) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) >= from);
   if(to) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) <= to);
   if(reportSelectedCompanyIds.size > 0) rows = rows.filter(r => reportSelectedCompanyIds.has(r.hydrants?.company_id));
   if(reportActivityFilter) rows = rows.filter(r => r.sessions?.activity_type === reportActivityFilter);
-  if(wetDry) rows = rows.filter(r => r.wet_dry === wetDry);
-  if(status) rows = rows.filter(r => r.condition === status || r.snow_cleared_status === status || r.snow_condition_flag === status);
+  if(exportWetDrySelected.size > 0) rows = rows.filter(r => exportWetDrySelected.has(r.wet_dry));
+  if(exportStatusSelected.size > 0) rows = rows.filter(r => exportStatusSelected.has(r.condition) || exportStatusSelected.has(r.snow_cleared_status) || exportStatusSelected.has(r.snow_condition_flag));
   return rows;
 }
 
@@ -1753,21 +2007,6 @@ function renderSettingsTab(){
       <button class="primary" id="addCompanyBtn">Add Company</button>
     </div>
     <div class="card">
-      <h3 style="margin-top:0;">Create Campaign</h3>
-      <div class="hint" style="margin-bottom:10px;">Manually pre-create a campaign instead of waiting for the first company to start one.</div>
-      <div class="field"><label>Name (optional — auto-generated if blank)</label><input type="text" id="newCampaignName"></div>
-      <div class="field"><label>Activity</label>
-        <select id="newCampaignActivity"><option value="flow_test">Flow Test</option><option value="condition_check">Condition Check</option><option value="snow_removal">Snow Removal</option></select>
-      </div>
-      <div class="field"><label>Companies (defaults to all)</label>
-        <div class="chip-grid" id="newCampaignCompanies">
-          <div class="chip active" data-camp-all="1">All Companies</div>
-          ${state.companies.map(c=>`<div class="chip active" data-camp-company="${c.id}">${esc(c.name)}</div>`).join('')}
-        </div>
-      </div>
-      <button class="primary" id="createCampaignBtn">Create Campaign</button>
-    </div>
-    <div class="card">
       <h3 style="margin-top:0;">Export</h3>
       <button class="secondary" id="exportBtn">Download Full Backup (CSV)</button>
     </div>
@@ -1820,36 +2059,6 @@ function renderSettingsTab(){
     toast('Company added');
     await loadRefData();
     renderSettingsTab();
-  };
-
-  let campSelectedAll = true;
-  let campSelectedIds = new Set(state.companies.map(c=>c.id));
-  document.querySelectorAll('[data-camp-all]').forEach(el=>{
-    el.onclick = ()=>{
-      campSelectedAll = true;
-      campSelectedIds = new Set(state.companies.map(c=>c.id));
-      document.querySelectorAll('#newCampaignCompanies .chip').forEach(c=>c.classList.add('active'));
-    };
-  });
-  document.querySelectorAll('[data-camp-company]').forEach(el=>{
-    el.onclick = ()=>{
-      const id = el.dataset.campCompany;
-      if(campSelectedIds.has(id)) campSelectedIds.delete(id); else campSelectedIds.add(id);
-      campSelectedAll = campSelectedIds.size === state.companies.length;
-      el.classList.toggle('active', campSelectedIds.has(id));
-      document.querySelector('[data-camp-all]').classList.toggle('active', campSelectedAll);
-    };
-  });
-  document.getElementById('createCampaignBtn').onclick = async ()=>{
-    const activityType = document.getElementById('newCampaignActivity').value;
-    let name = document.getElementById('newCampaignName').value.trim();
-    if(!name) name = ACTIVITY_LABELS[activityType] + ' — started ' + new Date().toLocaleDateString([], {month:'long', year:'numeric'});
-    const companyIds = campSelectedAll ? null : Array.from(campSelectedIds);
-    const { error } = await sb.from('campaigns').insert({ name, activity_type: activityType, status:'open', company_ids: companyIds });
-    if(error){ toast('Error: ' + error.message); return; }
-    toast('Campaign created');
-    state.tab = 'campaigns';
-    renderChiefShell();
   };
 
   document.getElementById('exportBtn').onclick = async ()=>{
