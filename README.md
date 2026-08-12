@@ -134,7 +134,58 @@ visibility, stats, and exportable reports/backups.
 - ⏳ Role-based permissions (admin vs. field user) — currently all authenticated
   users have full read/write access; needs tightening before real rollout
 
-## Latest build — no new SQL, app-level only
+## Latest build (this session) — requires migration 009
+
+- **New migration**: `sql/009_campaign_company_scope.sql` — adds
+  `campaigns.company_ids` (nullable array) so a manually-created campaign
+  can optionally be scoped to specific companies. NULL/empty = all
+  companies, which is what auto-created campaigns still use.
+- **Login overhaul**: Company field is now a searchable typeahead (type or
+  click to browse) instead of a plain text box with browser-native
+  autocomplete — no more remembered/auto-filled previous entries.
+- **One shared login code for all non-chief companies** (Settings →
+  Company Login Code), stored in `app_settings`. Chief-level companies
+  (C1/C2/C4) keep their own individual passwords (Settings → Chief Login
+  Codes). Add Company now defaults its login code field to the shared
+  code, and unlocks it for a custom entry only when "Chief-level access"
+  is checked.
+- **Back button at the top of every sub-page**, company side and chief
+  side alike (Activity Picker, Start/Edit Shift, Hydrant Entry, District
+  Checklist, Campaign Detail) — no more hunting for a link at the bottom
+  of a card.
+- **District Hydrant Checklist reworked**: defaults to the signed-in
+  company + division instead of the full citywide list; Company and
+  Division dropdowns let you view any other one; a "See All Hydrants
+  (Citywide)" button resets to the full list. Now also reachable from the
+  chief dashboard (via the Reports tab), where it defaults to citywide
+  since chiefs aren't tied to one company/division.
+- **Log: "Mark Repaired — Back In Service"** — editing a flagged entry
+  (Needs Repair/OOS/Damaged/Not Cleared) now offers this as a separate
+  action from Save Changes. It inserts a brand-new "good" entry rather
+  than overwriting history, so the record still shows exactly when it
+  broke and when it was fixed.
+- **Stats: Overdue list gets a PDF export** — formatted list with
+  hydrant/address/assigned company, for handing off or printing.
+- **Campaigns list** (chief dashboard) now shows live **% complete** and
+  **Damaged/OOS quick counts** right on each open campaign's row, plus a
+  **Close Campaign** button directly in the list (not just inside detail).
+  Closing a campaign (from the list or from Campaign Detail) now sets its
+  end date to the **actual last hydrant entry**, not the moment someone
+  clicked Close.
+- **Campaign Detail**: removed "View in Reports"; added direct **Export
+  CSV** and **Export PDF** buttons scoped to that campaign's own data. The
+  "By Company / Division" table now sorts Engines first (numerically),
+  then Ladders, then everything else — not alphabetically.
+- **Reports tab is now filter-and-export only** — the row-by-row hydrant
+  table has been removed entirely (it doesn't scale past a few hundred
+  hydrants). What's left: a summary card (counts only), company toggle
+  chips in a wrapped grid (multi-select + "All Companies"), activity
+  chips, a "Flagged only" filter, and Custom Export (CSV + PDF).
+- **Settings → Create Campaign** — manually pre-create a campaign with a
+  name, activity type, and a company multi-select that defaults to all
+  companies selected (uses the new `company_ids` column).
+
+## Previous build — no new SQL, app-level only
 
 - **Dates display as MM/DD/YYYY** everywhere in the UI (CSV/PDF exports
   still use YYYY-MM-DD for spreadsheet sortability — flag if you'd rather
@@ -153,12 +204,6 @@ visibility, stats, and exportable reports/backups.
   every company/division with hydrants for that activity shows up (0% /
   "not started" if they haven't begun), not just companies already working.
 - **Campaigns list has Year and Activity Type filters.**
-- **Reports tab redesign**: company selector is a wrapped multi-select chip
-  grid (+ "All Companies"), activity type is a chip selector, a **summary
-  card shows first** (counts only) and the full row table only renders once
-  something narrows the scope — so it never becomes an unusable 500-row
-  wall by default. Campaign Detail has a "View in Reports" button that
-  jumps here pre-filtered.
 - **PDF export** added alongside CSV — same filters, formatted/searchable,
   suitable to hand directly to Water & Sewer (via jsPDF, loaded from CDN).
 - **Settings → Add Company** — create a new company (name + login code +
@@ -248,6 +293,13 @@ Practical implications:
 3. Run `sql/006_company_login_and_job_integrity.sql`.
 4. Run `sql/007_hydrant_division_assignment.sql`.
 5. Run `sql/008_campaigns_and_admin_tiers.sql`.
+6. Run `sql/009_campaign_company_scope.sql`.
+
+**Note on login codes after this update**: non-chief companies now all
+share ONE login code (Settings → Company Login Code, defaults to `lfd2026`
+until changed). Any individual `access_code` values set per-company in an
+earlier session are no longer used for login — only chief-level companies'
+individual codes still matter.
 6. Visit the live site: `https://lfd-hydrants.vercel.app`
 7. **Test a regular company**: sign in as e.g. "Engine 1" (password `lfd2026`),
    pick a division, Start New Job, log a couple of hydrants, End Shift. Confirm
