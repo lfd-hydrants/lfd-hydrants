@@ -136,6 +136,49 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
+### Offline fillable sheets + auto-import (this session) — no new SQL, 2 new CDN libraries
+
+- **The problem this solves**: iPads normally have connectivity, but if
+  one drops signal, the web app itself becomes unreachable (nothing's
+  cached for true offline use — see the earlier discussion on why full
+  offline sync is a much bigger build). So the fix is a fillable PDF
+  that lives on the device **before** connectivity ever becomes an
+  issue, entirely independent of the app or internet.
+- **Settings → Offline Sheets → "Generate All (ZIP)"** (chief-only) —
+  produces one real fillable PDF per Company + List (e.g. "Engine
+  1-List-A.pdf"), bundled into a single ZIP. Each sheet has a header
+  (Activity, Date, OIC, Division, Crew) and a row per hydrant with
+  fields for Static/Residual/Pitot/Gauge readings, Condition, Wet/Dry,
+  Snow Cleared/Flag, and Notes — covering all 3 activity types in one
+  sheet, since the header's Activity selection determines how each
+  row gets interpreted later. **Distribution is manual and outside the
+  app** — AirDrop, email, cable, whatever's normal — done ahead of
+  time, not generated in the moment of losing signal.
+  - Built with **pdf-lib** (new CDN dependency) so the fields are real
+    AcroForm form fields, not flat visual blanks — fillable natively
+    in iOS's Files/Preview app (or Adobe, PDF Expert, etc.), which
+    actually stores structured values rather than freehand markup.
+  - Each hydrant's fields are secretly tagged with its database ID
+    (not its hydrant number), so import matching is exact regardless
+    of number formatting or duplicates.
+  - Bulk ZIP packaging via **JSZip** (new CDN dependency).
+- **Company Home → "Import Offline Sheet"** — upload the completed
+  PDF; the app reads the form field values directly (no retyping),
+  shows a review summary (company/list/activity/date/OIC/division/
+  crew-matched/row-count) with warnings for anything that couldn't be
+  matched (e.g. an OIC name that doesn't match current members), then
+  on confirm: finds-or-creates the matching job (and campaign, same
+  logic as a normal Start Shift), creates one shift already marked
+  closed (start/end both stamped at import time, since the real
+  offline start/end time isn't captured on paper), and inserts one
+  `hydrant_tests` row per filled-in hydrant row — using the same fixed
+  Testing Settings (coefficient/outlet size/# outlets) and flow
+  formula as live entry.
+  - **Known limitation**: since real offline start/end times aren't
+    captured, imported shifts don't have a `total_minutes` value —
+    they won't contribute to the Man-Hours stat. Worth noting if that
+    becomes a real gap.
+
 ### Master List Snapshot report + Division/List export bug fix (this session) — no new SQL
 
 - **Master List Snapshot** — a new report type: one row per hydrant
