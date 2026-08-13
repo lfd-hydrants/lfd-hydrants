@@ -14,6 +14,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root{ --ink:#1a1a1a; --paper:#f6f5f1; --card:#fff; --red:#b3231c; --red-deep:#7d1712;
     --steel:#3c4c55; --line:#d8d5cc; --ok:#2f6b3a; --warn:#a8631b; }
@@ -538,6 +540,7 @@ async function renderCompanyHome(){
       <button class="primary" id="startNewBtn">Start New Job</button>
       <button class="secondary" id="checklistBtn">Master Hydrant List</button>
       <button class="secondary" id="reportHydrantBtn" style="border-color:var(--red);color:var(--red-deep);">Report Hydrant</button>
+      <button class="secondary" id="importOfflineBtn">Import Offline Sheet</button>
     </div>
     ${closedJobs && closedJobs.length ? `
     <div class="card">
@@ -555,6 +558,7 @@ async function renderCompanyHome(){
   document.getElementById('startNewBtn').onclick = renderActivityPicker;
   document.getElementById('checklistBtn').onclick = ()=> renderMasterHydrantList({ backTo: renderCompanyHome, isChief:false });
   document.getElementById('reportHydrantBtn').onclick = ()=> renderReportHydrant();
+  document.getElementById('importOfflineBtn').onclick = ()=> renderImportOfflineSheet();
 
   main.querySelectorAll('[data-resume]').forEach(btn=>{
     btn.onclick = async ()=>{
@@ -761,6 +765,50 @@ function renderReportHydrant(){
     }
     renderCompanyHome();
   };
+}
+
+function renderImportOfflineSheet(){
+  const main = document.getElementById('main');
+  main.innerHTML = backBar('Home', 'topBackBtn') + `
+    <div class="card">
+      <h3 style="margin-top:0;">Import Offline Sheet</h3>
+      <div class="hint" style="margin-bottom:12px;">Upload a completed offline PDF sheet — this reads the filled-in values and creates the entries automatically.</div>
+      <div class="field"><input type="file" id="offlineFileInput" accept="application/pdf"></div>
+      <div id="offlineSummary"></div>
+    </div>`;
+  document.getElementById('topBackBtn').onclick = renderCompanyHome;
+
+  document.getElementById('offlineFileInput').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const summaryBox = document.getElementById('offlineSummary');
+    summaryBox.innerHTML = '<div class="hint">Reading sheet…</div>';
+    const parsed = await importOfflineSheet(file);
+    if(!parsed){ summaryBox.innerHTML = ''; return; }
+
+    const companyName = state.companies.find(c=>c.id===parsed.companyId)?.name || 'Unknown';
+    summaryBox.innerHTML = `
+      <div class="calc-box">
+        <div class="calc-row"><span>Company / List</span><span class="v">${esc(companyName)} · List ${esc(parsed.block)}</span></div>
+        <div class="calc-row"><span>Activity</span><span class="v">${esc(parsed.activityLabel)}</span></div>
+        <div class="calc-row"><span>Date</span><span class="v">${esc(parsed.dateStr||'—')}</span></div>
+        <div class="calc-row"><span>OIC</span><span class="v">${parsed.oic ? esc(parsed.oic.name) : '⚠ not matched'}</span></div>
+        <div class="calc-row"><span>Division</span><span class="v">${parsed.division ? esc(parsed.division.name) : '⚠ not matched'}</span></div>
+        <div class="calc-row"><span>Crew matched</span><span class="v">${parsed.crewIds.length} of ${parsed.crewNames.length}</span></div>
+        <div class="calc-row"><span>Hydrant rows with data</span><span class="v">${parsed.rows.length}</span></div>
+      </div>
+      ${parsed.rows.length === 0 ? '<div class="hint" style="margin-top:8px;">No filled-in rows found — nothing to import.</div>' : `
+      <button class="primary" id="confirmImportBtn" style="margin-top:10px;">Confirm &amp; Import ${parsed.rows.length} Entries</button>
+      `}
+    `;
+    const confirmBtn = document.getElementById('confirmImportBtn');
+    if(confirmBtn) confirmBtn.onclick = async ()=>{
+      confirmBtn.disabled = true;
+      const ok = await commitOfflineSheetImport(parsed);
+      if(ok) renderCompanyHome();
+      else confirmBtn.disabled = false;
+    };
+  });
 }
 
 async function getOrCreateCampaign(activityType){
@@ -2365,6 +2413,292 @@ async function exportMasterSnapshotPdf(hydrantsList){
 }
 
 // ============================================================
+// OFFLINE FILLABLE SHEETS — generate (bulk, one PDF per Company+List)
+// and import filled sheets back into the system when connection returns.
+// Built with pdf-lib so form fields are real AcroForm fields (readable
+// by iOS Files/Preview's native "Fill Out" feature, Adobe, etc.) —
+// each hydrant's fields are tagged with its database ID, so import can
+// match rows back precisely regardless of hydrant number formatting.
+// ============================================================
+async function generateOfflineSheetPdfBytes(companyId, block, companyName){
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const hydrants = state.hydrants.filter(h => h.company_id === companyId && h.block === block)
+    .sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
+
+  const pdfDoc = await PDFDocument.create();
+  const form = pdfDoc.getForm();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  const PAGE_W = 792, PAGE_H = 612, MARGIN = 28; // Letter, landscape
+  const ROW_H = 15;
+  const COLS = [
+    { key:'num', label:'Hydrant', x:MARGIN, w:44 },
+    { key:'addr', label:'Address / Notes', x:MARGIN+44, w:150 },
+    { key:'static', label:'Static', x:MARGIN+194, w:34 },
+    { key:'residual', label:'Resid.', x:MARGIN+228, w:34 },
+    { key:'pitot', label:'Pitot', x:MARGIN+262, w:34 },
+    { key:'gauge', label:'Gauge', x:MARGIN+296, w:34 },
+    { key:'condition', label:'Condition', x:MARGIN+330, w:70 },
+    { key:'wetdry', label:'Wet/Dry', x:MARGIN+400, w:44 },
+    { key:'cleared', label:'Snow', x:MARGIN+444, w:60 },
+    { key:'flag', label:'Flag', x:MARGIN+504, w:50 },
+    { key:'notes', label:'Notes', x:MARGIN+554, w:PAGE_W-MARGIN-(MARGIN+554) },
+  ];
+
+  let page, y;
+  function newPage(withHeader){
+    page = pdfDoc.addPage([PAGE_W, PAGE_H]);
+    y = PAGE_H - MARGIN;
+    page.drawText(`LFD Hydrant Testing — Offline Sheet: ${companyName} · List ${block}`, { x: MARGIN, y, size: 13, font: fontBold });
+    y -= 20;
+    if(withHeader){
+      const activityField = form.createDropdown('hdr_activity');
+      activityField.addOptions(['', 'Flow Test', 'Condition Check', 'Snow Removal']);
+      activityField.addToPage(page, { x: MARGIN, y: y-14, width: 120, height: 16, font });
+      page.drawText('Activity:', { x: MARGIN, y: y-2, size: 8, font });
+
+      const dateField = form.createTextField('hdr_date');
+      dateField.addToPage(page, { x: MARGIN+140, y: y-14, width: 90, height: 16, font });
+      page.drawText('Date:', { x: MARGIN+140, y: y-2, size: 8, font });
+
+      const oicField = form.createDropdown('hdr_oic');
+      oicField.addOptions(['', ...state.members.map(m=>m.name)]);
+      oicField.addToPage(page, { x: MARGIN+250, y: y-14, width: 130, height: 16, font });
+      page.drawText('OIC:', { x: MARGIN+250, y: y-2, size: 8, font });
+
+      const divField = form.createDropdown('hdr_division');
+      divField.addOptions(['', ...state.divisions.map(d=>d.name)]);
+      divField.addToPage(page, { x: MARGIN+400, y: y-14, width: 100, height: 16, font });
+      page.drawText('Division:', { x: MARGIN+400, y: y-2, size: 8, font });
+
+      const crewField = form.createTextField('hdr_crew');
+      crewField.addToPage(page, { x: MARGIN+520, y: y-14, width: PAGE_W-MARGIN-(MARGIN+520), height: 16, font });
+      page.drawText('Crew (names, comma-separated):', { x: MARGIN+520, y: y-2, size: 8, font });
+
+      y -= 34;
+
+      const metaCompany = form.createTextField('meta_company_id');
+      metaCompany.addToPage(page, { x: 2, y: 2, width: 1, height: 1 });
+      metaCompany.setText(companyId);
+      const metaBlock = form.createTextField('meta_block');
+      metaBlock.addToPage(page, { x: 4, y: 2, width: 1, height: 1 });
+      metaBlock.setText(block);
+    }
+    COLS.forEach(c => page.drawText(c.label, { x: c.x, y, size: 8, font: fontBold }));
+    y -= 4;
+    page.drawLine({ start:{x:MARGIN,y}, end:{x:PAGE_W-MARGIN,y}, thickness:0.5, color: rgb(0.6,0.6,0.6) });
+    y -= 12;
+  }
+
+  newPage(true);
+
+  for(const h of hydrants){
+    if(y < MARGIN + ROW_H) newPage(false);
+    const addrText = `${h.hydrant_number} `; // placeholder, real number drawn separately below
+    page.drawText(h.hydrant_number, { x: COLS[0].x, y, size: 7, font });
+    const addrNotes = (h.address||'') + (h.location_notes ? ' — ' + h.location_notes : '');
+    page.drawText(addrNotes.length > 46 ? addrNotes.slice(0,44)+'…' : addrNotes, { x: COLS[1].x, y, size: 6.5, font });
+
+    const prefix = 'h_' + h.id + '_';
+    const fieldY = y - 2, fieldH = ROW_H - 2;
+
+    const staticF = form.createTextField(prefix+'static'); staticF.addToPage(page, { x: COLS[2].x, y: fieldY, width: COLS[2].w-2, height: fieldH, font });
+    const residF = form.createTextField(prefix+'residual'); residF.addToPage(page, { x: COLS[3].x, y: fieldY, width: COLS[3].w-2, height: fieldH, font });
+    const pitotF = form.createTextField(prefix+'pitot'); pitotF.addToPage(page, { x: COLS[4].x, y: fieldY, width: COLS[4].w-2, height: fieldH, font });
+    const gaugeF = form.createTextField(prefix+'gauge'); gaugeF.addToPage(page, { x: COLS[5].x, y: fieldY, width: COLS[5].w-2, height: fieldH, font });
+
+    const condF = form.createDropdown(prefix+'condition');
+    condF.addOptions(['','Good','Needs Repair','OOS']);
+    condF.addToPage(page, { x: COLS[6].x, y: fieldY, width: COLS[6].w-2, height: fieldH, font });
+
+    const wetF = form.createDropdown(prefix+'wetdry');
+    wetF.addOptions(['','Dry','Wet']);
+    wetF.addToPage(page, { x: COLS[7].x, y: fieldY, width: COLS[7].w-2, height: fieldH, font });
+
+    const clearF = form.createDropdown(prefix+'cleared');
+    clearF.addOptions(['','Cleared','Not Cleared']);
+    clearF.addToPage(page, { x: COLS[8].x, y: fieldY, width: COLS[8].w-2, height: fieldH, font });
+
+    const flagF = form.createDropdown(prefix+'flag');
+    flagF.addOptions(['','Damaged','OOS']);
+    flagF.addToPage(page, { x: COLS[9].x, y: fieldY, width: COLS[9].w-2, height: fieldH, font });
+
+    const notesF = form.createTextField(prefix+'notes'); notesF.addToPage(page, { x: COLS[10].x, y: fieldY, width: COLS[10].w-2, height: fieldH, font });
+
+    y -= ROW_H;
+  }
+
+  return await pdfDoc.save();
+}
+
+async function generateAllOfflineSheets(){
+  toast('Generating offline sheets…');
+  const pairs = new Map();
+  state.hydrants.forEach(h => {
+    if(!h.company_id || !h.block) return;
+    const key = h.company_id + '|' + h.block;
+    if(!pairs.has(key)) pairs.set(key, { companyId: h.company_id, block: h.block });
+  });
+  const zip = new JSZip();
+  for(const { companyId, block } of pairs.values()){
+    const companyName = state.companies.find(c=>c.id===companyId)?.name || 'Unknown';
+    const bytes = await generateOfflineSheetPdfBytes(companyId, block, companyName);
+    const safeName = companyName.replace(/[^A-Za-z0-9]+/g,'-');
+    zip.file(`${safeName}-List-${block}.pdf`, bytes);
+  }
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'offline-sheets-'+new Date().toISOString().slice(0,10)+'.zip';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('Offline sheets downloaded');
+}
+
+// ---- Import a filled offline sheet ----
+async function importOfflineSheet(file){
+  const { PDFDocument } = PDFLib;
+  const bytes = await file.arrayBuffer();
+  let pdfDoc;
+  try{ pdfDoc = await PDFDocument.load(bytes); }
+  catch(e){ toast('Could not read this PDF'); return null; }
+  const form = pdfDoc.getForm();
+
+  function getText(name){ try{ return form.getTextField(name).getText() || ''; }catch(e){ return ''; } }
+  function getDropdown(name){ try{ return (form.getDropdown(name).getSelected()||[])[0] || ''; }catch(e){ return ''; } }
+
+  const companyId = getText('meta_company_id');
+  const block = getText('meta_block');
+  if(!companyId || !block){ toast("This doesn't look like a valid offline sheet"); return null; }
+
+  const activityLabel = getDropdown('hdr_activity');
+  const activityMap = { 'Flow Test':'flow_test', 'Condition Check':'condition_check', 'Snow Removal':'snow_removal' };
+  const activityType = activityMap[activityLabel];
+  if(!activityType){ toast('Select an Activity on the sheet before importing'); return null; }
+
+  const dateStr = getText('hdr_date').trim();
+  const oicName = getDropdown('hdr_oic');
+  const divisionName = getDropdown('hdr_division');
+  const crewNames = getText('hdr_crew').split(',').map(s=>s.trim()).filter(Boolean);
+
+  const oic = state.members.find(m => m.name.toLowerCase() === oicName.toLowerCase());
+  const division = state.divisions.find(d => d.name.toLowerCase() === divisionName.toLowerCase());
+  const crewIds = crewNames.map(n => state.members.find(m=>m.name.toLowerCase()===n.toLowerCase())).filter(Boolean).map(m=>m.id);
+
+  const hydrantsFor = state.hydrants.filter(h => h.company_id === companyId && h.block === block);
+  const rows = [];
+  for(const h of hydrantsFor){
+    const prefix = 'h_' + h.id + '_';
+    const row = {
+      hydrantId: h.id, hydrantNumber: h.hydrant_number,
+      static_psi: getText(prefix+'static').trim(),
+      residual_psi: getText(prefix+'residual').trim(),
+      pitot_psi: getText(prefix+'pitot').trim(),
+      gauge_flow_gpm: getText(prefix+'gauge').trim(),
+      condition: getDropdown(prefix+'condition'),
+      wetdry: getDropdown(prefix+'wetdry'),
+      cleared: getDropdown(prefix+'cleared'),
+      flag: getDropdown(prefix+'flag'),
+      notes: getText(prefix+'notes').trim(),
+    };
+    const hasData = activityType === 'flow_test'
+      ? (row.static_psi || row.residual_psi || row.pitot_psi || row.gauge_flow_gpm || row.condition)
+      : activityType === 'condition_check'
+      ? (row.condition || row.wetdry)
+      : (row.cleared || row.flag);
+    if(hasData) rows.push(row);
+  }
+
+  return { companyId, block, activityType, activityLabel, dateStr, oic, division, crewIds, crewNames, rows };
+}
+
+async function commitOfflineSheetImport(parsed){
+  const FIXED_C = parseFloat(state.settings.default_discharge_coeff) || 0.9;
+  const FIXED_D = parseFloat(state.settings.default_outlet_size) || 2.5;
+  const FIXED_N = parseFloat(state.settings.default_num_outlets) || 1;
+
+  let job;
+  const { data: existingJob } = await sb.from('jobs').select('*')
+    .eq('company_id', parsed.companyId).eq('block', parsed.block).eq('activity_type', parsed.activityType).eq('status','open').maybeSingle();
+  if(existingJob){ job = existingJob; }
+  else {
+    const { data: existingCampaign } = await sb.from('campaigns').select('*').eq('activity_type', parsed.activityType).eq('status','open').order('created_at',{ascending:false}).limit(1).maybeSingle();
+    let campaign = existingCampaign;
+    if(!campaign){
+      const label = ACTIVITY_LABELS[parsed.activityType] + ' — started ' + new Date().toLocaleDateString([], {month:'long', year:'numeric'});
+      const { data: newCampaign } = await sb.from('campaigns').insert({ name: label, activity_type: parsed.activityType, status:'open' }).select().single();
+      campaign = newCampaign;
+    }
+    const { data: newJob, error: jobErr } = await sb.from('jobs').insert({
+      company_id: parsed.companyId, block: parsed.block, activity_type: parsed.activityType,
+      status:'open', campaign_id: campaign ? campaign.id : null,
+    }).select().single();
+    if(jobErr){ toast('Error creating job: ' + jobErr.message); return false; }
+    job = newJob;
+  }
+
+  const sessionDate = parsed.dateStr && !isNaN(Date.parse(parsed.dateStr)) ? new Date(parsed.dateStr).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+  const nowIso = new Date().toISOString();
+  const { data: shift, error: shiftErr } = await sb.from('sessions').insert({
+    job_id: job.id, company_id: parsed.companyId, activity_type: parsed.activityType,
+    division_id: parsed.division ? parsed.division.id : null,
+    oic_member_id: parsed.oic ? parsed.oic.id : null,
+    crew_member_ids: parsed.crewIds,
+    session_date: sessionDate, started_at: nowIso, ended_at: nowIso, status: 'closed',
+  }).select().single();
+  if(shiftErr){ toast('Error creating shift: ' + shiftErr.message); return false; }
+
+  const inserts = parsed.rows.map(row => {
+    if(parsed.activityType === 'flow_test'){
+      const P = parseFloat(row.pitot_psi);
+      const hs = parseFloat(row.static_psi);
+      const hr = parseFloat(row.residual_psi);
+      let flow=null, drop=null, flow20=null;
+      if(!isNaN(P) && P>0) flow = 29.83 * FIXED_C * FIXED_D*FIXED_D * Math.sqrt(P) * FIXED_N;
+      if(!isNaN(hs) && !isNaN(hr) && hs>0) drop = ((hs-hr)/hs)*100;
+      if(flow!==null && !isNaN(hs) && !isNaN(hr) && hs>20 && (hs-hr)>0) flow20 = flow * Math.pow((hs-20)/(hs-hr), 0.54);
+      const condMap = { 'Good':'good', 'Needs Repair':'repair', 'OOS':'oos' };
+      return {
+        session_id: shift.id, hydrant_id: row.hydrantId,
+        static_psi: row.static_psi || null, residual_psi: row.residual_psi || null, pitot_psi: row.pitot_psi || null,
+        gauge_flow_gpm: row.gauge_flow_gpm || null,
+        orifice_diameter: FIXED_D, discharge_coeff: FIXED_C, num_outlets: FIXED_N,
+        flow_gpm: flow!==null ? Math.round(flow) : null, drop_pct: drop!==null ? drop.toFixed(1) : null,
+        flow_at_20psi: flow20!==null ? Math.round(flow20) : null,
+        condition: condMap[row.condition] || null,
+        wet_dry: row.wetdry ? row.wetdry.toLowerCase() : null,
+        notes: row.notes || null,
+      };
+    } else if(parsed.activityType === 'condition_check'){
+      const condMap = { 'Good':'good', 'Needs Repair':'repair', 'OOS':'oos' };
+      return {
+        session_id: shift.id, hydrant_id: row.hydrantId,
+        condition: condMap[row.condition] || null,
+        wet_dry: row.wetdry ? row.wetdry.toLowerCase() : null,
+        notes: row.notes || null,
+      };
+    } else {
+      const clearMap = { 'Cleared':'cleared', 'Not Cleared':'not_cleared' };
+      const flagMap = { 'Damaged':'damaged', 'OOS':'oos' };
+      return {
+        session_id: shift.id, hydrant_id: row.hydrantId,
+        snow_cleared_status: clearMap[row.cleared] || null,
+        snow_condition_flag: flagMap[row.flag] || null,
+        notes: row.notes || null,
+      };
+    }
+  });
+
+  if(inserts.length){
+    const { error: insertErr } = await sb.from('hydrant_tests').insert(inserts);
+    if(insertErr){ toast('Error saving entries: ' + insertErr.message); return false; }
+  }
+  toast(`Imported ${inserts.length} hydrant entries`);
+  return true;
+}
+
+// ============================================================
 // CHIEF: SETTINGS
 // ============================================================
 function markDirty(btnId){ const b = document.getElementById(btnId); if(b) b.classList.add('unsaved'); }
@@ -2419,6 +2753,11 @@ function renderSettingsTab(){
     <div class="card">
       <h3 style="margin-top:0;">Export</h3>
       <button class="secondary" id="exportBtn">Download Full Backup (CSV)</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Offline Sheets</h3>
+      <div class="hint" style="margin-bottom:10px;">Fillable PDFs, one per Company + List, for crews to save on their device ahead of time in case of dead zones. Distribute via AirDrop/email — not something generated in the moment.</div>
+      <button class="secondary" id="genOfflineBtn">Generate All (ZIP)</button>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Roster (read-only preview)</h3>
@@ -2496,6 +2835,7 @@ function renderSettingsTab(){
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+  document.getElementById('genOfflineBtn').onclick = generateAllOfflineSheets;
 }
 
 if('serviceWorker' in navigator){
