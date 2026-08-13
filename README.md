@@ -130,11 +130,42 @@ visibility, stats, and exportable reports/backups.
 - ⏳ Auto-emailed backups — not built yet
 - ⏳ Scheduled ping (keep Supabase awake) — not built yet
 - ⏳ QR codes, map view — not built yet
-- ⏳ Deployed live website (currently local-only file) — not deployed yet
-- ⏳ Role-based permissions (admin vs. field user) — currently all authenticated
-  users have full read/write access; needs tightening before real rollout
+- ✅ Deployed live at `https://lfd-hydrants.vercel.app` (auto-redeploys on GitHub push)
+- ⏳ **Role-based permissions are UI-only, not database-enforced** — every
+  "chief-only" feature (Status tab repairs, Settings, editing campaigns,
+  Company Login Code, everything) is only hidden from regular company
+  logins by which buttons the app chooses to render. The database itself
+  (Supabase RLS) treats every signed-in session as equally trusted, since
+  login runs through one shared anonymous connection rather than real
+  individual accounts — see "Security note on the company-login model"
+  below. Anyone with basic browser dev-tools knowledge could bypass the
+  UI and read/write anything directly. This is a bigger gap than when
+  this note was first written, since there's now meaningfully more
+  chief-only surface area than there used to be. **Worth fixing before
+  handing this to the full department**, not just before "real rollout"
+  in the abstract.
 
 ## Build history
+
+### Structural reorganization: sticky flags, Status→Log merge, lean Reports, Campaigns dropdown, flexible email list, Stats drill-down (this session) — no new SQL
+
+- **Sticky flag status logic (real behavior change)**: once any company logs a hydrant as Damaged or OOS, that stays the hydrant's displayed status — even if a different company later logs a routine "Good" test on it — until a **chief explicitly clears it** via Mark Repaired. The badge shown is the **worst status since the last reset**; if the most recent flag differs from that worst one, it's shown as secondary text ("Most recent: Damaged, Aug 12") so nothing gets buried. Applies everywhere status is computed: Master Hydrant List, Hydrant Detail, Log, and the Master List Snapshot export.
+- **Status tab removed, folded into Log** — its chief-only quick actions (Set Damaged / Set OOS / Mark Repaired) now live inside Log's edit-entry modal, shown only to chief logins, only on entries that are currently flagged.
+- **List-select screen** (the screen between picking Division and List) now has **All Hydrants** and **Report Hydrant** buttons, so neither requires committing to a specific list first.
+- **Master Hydrant List**: added Status and Wet/Dry filters, plus a Sort By dropdown (Hydrant #, Address, Company, List, Status).
+- **Reports tab rebuilt from scratch — much leaner.** Click a company to add it to a selected list (with a × to remove); empty selection = citywide. Good/Damaged/OOS toggle chips narrow further. Output is deliberately minimal: **Hydrant #, Address, Date Last Checked** — a "who needs a look" list, not a data dump. Activity-based reporting (Flow Test/Condition Check/Snow Removal breakdowns) lives in Campaigns instead, where it already existed. The richer Master List Snapshot (status + flow data) stays exactly where it was, unchanged in shape.
+- **Campaigns**: closed campaigns switched from a card list to a searchable typeahead dropdown — type or browse, select one, and it opens the existing Campaign Detail view (Edit / Close / Export CSV+PDF all already live there).
+- **Settings → Report Hydrant Email Recipients**: changed from 3 fixed named fields to a real add/remove list — type an email, hit Add; each entry has a × to remove. Stored as a single comma-separated setting rather than 3 separate keys.
+- **Stats redesigned**: Today/Week/Month cards no longer show a raw "Shifts" count — instead, a row of clickable company shorthand chips (E1, L2, etc.) for whoever was active that period; tapping one opens exactly what they logged in that window. Added **Hours & Man-Hours by Campaign** (open campaigns) alongside the existing by-Company breakdown, plus an "All Companies" grand-total row on the by-Company table.
+- Confirmed **Report Hydrant never creates or touches a campaign** — it only ever inserts a single standalone `hydrant_tests` row, exactly as intended.
+- Confirmed **per-activity summaries already only show relevant fields** — Snow Removal's form never captures Wet/Dry in the first place, so it was never displaying there; no change needed, just verified.
+
+### Not done this session — flagged for a dedicated pass
+- **Real database-level access control** (per-company/chief Supabase accounts, RLS enforcement) — deliberately not rushed into this same sweep, since a mistake here could lock out the whole department; needs its own careful, testable session.
+- **CSV/PDF format documentation** — a written spec of every report's exact columns.
+- **Admin tab reorganization** — revisit now that Status is gone and Reports is leaner; the remaining 5 tabs (Campaigns/Reports/Log/Stats/Settings) may already be in better shape, worth a fresh look.
+- **General "everything editable where practical" audit.**
+- **Wipe Training Data script** — still pending an actual training date.
 
 ### Offline fillable sheets + auto-import (this session) — no new SQL, 2 new CDN libraries
 
