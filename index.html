@@ -186,18 +186,34 @@ async function init(){
   render();
 }
 
+async function fetchAllRows(table, filters){
+  let all = [];
+  let from = 0;
+  const pageSize = 1000;
+  while(true){
+    let q = sb.from(table).select('*').range(from, from + pageSize - 1);
+    if(filters) q = filters(q);
+    const { data, error } = await q;
+    if(error){ console.error(table, error.message); break; }
+    all = all.concat(data || []);
+    if(!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
 async function loadRefData(){
-  const [c, d, m, h, s] = await Promise.all([
+  const [c, d, m, s] = await Promise.all([
     sb.from('companies').select('*').order('name'),
     sb.from('divisions').select('*').order('name'),
     sb.from('members').select('*').eq('active', true).order('name'),
-    sb.from('hydrants').select('*').eq('active', true).order('hydrant_number'),
     sb.from('app_settings').select('*'),
   ]);
+  const hydrants = await fetchAllRows('hydrants', q => q.eq('active', true).order('hydrant_number'));
   state.companies = (c.data || []).sort((a,b)=>compareCompanyNames(a.name,b.name));
   state.divisions = d.data || [];
   state.members = m.data || [];
-  state.hydrants = h.data || [];
+  state.hydrants = hydrants;
   state.settings = {};
   (s.data || []).forEach(row => state.settings[row.key] = row.value);
 }
@@ -521,6 +537,7 @@ async function renderCompanyHome(){
     <div class="card">
       <button class="primary" id="startNewBtn">Start New Job</button>
       <button class="secondary" id="checklistBtn">Master Hydrant List</button>
+      <button class="secondary" id="reportHydrantBtn" style="border-color:var(--red);color:var(--red-deep);">Report Hydrant</button>
     </div>
     ${closedJobs && closedJobs.length ? `
     <div class="card">
@@ -537,6 +554,7 @@ async function renderCompanyHome(){
 
   document.getElementById('startNewBtn').onclick = renderActivityPicker;
   document.getElementById('checklistBtn').onclick = ()=> renderMasterHydrantList({ backTo: renderCompanyHome, isChief:false });
+  document.getElementById('reportHydrantBtn').onclick = ()=> renderReportHydrant();
 
   main.querySelectorAll('[data-resume]').forEach(btn=>{
     btn.onclick = async ()=>{
@@ -655,6 +673,94 @@ function renderActivityPicker(){
       } else { renderStartShift({ activityType }, null); }
     };
   });
+}
+
+function renderReportHydrant(){
+  const main = document.getElementById('main');
+  let selectedId = null;
+  let condition = null;
+
+  main.innerHTML = backBar('Home', 'topBackBtn') + `
+    <div class="card">
+      <h3 style="margin-top:0;">Report Hydrant</h3>
+      <div class="hint" style="margin-bottom:12px;">For flagging a hydrant on sight — no job or shift needed.</div>
+      <div class="field"><label>Search Hydrant</label>
+        <input type="text" id="rh_search" placeholder="Search by number or address…">
+        <div class="search-results" id="rh_results" style="display:none;"></div>
+      </div>
+      <div id="rh_selected" class="hint" style="margin-bottom:12px;"></div>
+      <div class="field"><label>Condition</label>
+        <div class="toggle-group">
+          <button type="button" class="toggle-btn" data-rh-cond="repair">Damaged</button>
+          <button type="button" class="toggle-btn" data-rh-cond="oos">Out of Service</button>
+        </div>
+      </div>
+      <div class="field"><label>Notes</label><textarea id="rh_notes" placeholder="What did you see?"></textarea></div>
+      <button class="primary" id="rh_submitBtn">Report &amp; Notify</button>
+    </div>`;
+  document.getElementById('topBackBtn').onclick = ()=> guardNavigate(renderCompanyHome);
+  clearFormDirty();
+  wireDirtyTracking(main);
+
+  const input = document.getElementById('rh_search');
+  const results = document.getElementById('rh_results');
+  input.addEventListener('input', ()=>{
+    const q = input.value.trim().toLowerCase();
+    if(!q){ results.style.display='none'; results.innerHTML=''; return; }
+    const matches = state.hydrants.filter(h => h.hydrant_number.toLowerCase().includes(q) || (h.address||'').toLowerCase().includes(q)).slice(0, 8);
+    results.style.display = matches.length ? 'block' : 'none';
+    results.innerHTML = matches.map(h => {
+      const comp = state.companies.find(c=>c.id===h.company_id)?.name || '—';
+      return `<div class="search-result-item" data-id="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}<small>${esc(comp)} · List ${esc(h.block||'—')}</small></div>`;
+    }).join('');
+    results.querySelectorAll('.search-result-item').forEach(el=>{
+      el.onclick = ()=>{
+        selectedId = el.dataset.id;
+        markFormDirty();
+        const h = state.hydrants.find(x=>x.id===selectedId);
+        input.value = h.hydrant_number;
+        results.style.display = 'none';
+        document.getElementById('rh_selected').textContent = `Selected: ${h.hydrant_number} — ${h.address||''}`;
+      };
+    });
+  });
+
+  main.querySelectorAll('[data-rh-cond]').forEach(btn=>{
+    btn.onclick = ()=>{
+      condition = btn.dataset.rhCond;
+      markFormDirty();
+      main.querySelectorAll('[data-rh-cond]').forEach(b=>{ b.classList.toggle('active', b===btn); b.classList.remove('bad'); });
+      btn.classList.add('active','bad');
+    };
+  });
+
+  document.getElementById('rh_submitBtn').onclick = async ()=>{
+    if(!selectedId){ toast('Search and select a hydrant'); return; }
+    if(!condition){ toast('Select Damaged or Out of Service'); return; }
+    const notes = document.getElementById('rh_notes').value || null;
+    const { error } = await sb.from('hydrant_tests').insert({
+      hydrant_id: selectedId, session_id: null, condition,
+      reported_by_company_id: state.company.id, notes,
+    });
+    if(error){ toast('Error: ' + error.message); return; }
+    clearFormDirty();
+    toast('Hydrant reported');
+
+    const h = state.hydrants.find(x=>x.id===selectedId);
+    const recipients = [state.settings.report_email_c4, state.settings.report_email_water, state.settings.report_email_liaison]
+      .filter(Boolean).join(',');
+    if(recipients){
+      const condLabel = condition === 'oos' ? 'Out of Service' : 'Damaged';
+      const subject = encodeURIComponent(`Hydrant Report: ${h.hydrant_number} — ${condLabel}`);
+      const body = encodeURIComponent(
+        `Hydrant: ${h.hydrant_number}\nAddress: ${h.address||''}\nCondition: ${condLabel}\nReported by: ${state.company.name}\nDate: ${fmtDate(new Date())}\n\nNotes:\n${notes||'(none)'}`
+      );
+      window.location.href = `mailto:${recipients}?subject=${subject}&body=${body}`;
+    } else {
+      toast('No notification emails configured in Settings');
+    }
+    renderCompanyHome();
+  };
 }
 
 async function getOrCreateCampaign(activityType){
@@ -792,6 +898,7 @@ function hydrantPickerHtml(pending){
     <div class="field"><label>Hydrant Number ${pending.length===0 ? '— all done for this job!' : ''}</label>
       <select id="f_hydrant"><option value="">${pending.length ? 'Select hydrant…' : 'No hydrants remaining'}</option>${pending.map(h=>`<option value="${h.id}">${esc(h.hydrant_number)} — ${esc(h.address||'')}</option>`).join('')}</select>
     </div>
+    <div id="locationNotesBox"></div>
     <div class="field">
       <label>Hydrant not on the list?</label>
       <select id="manualDropdown"><option value="">Browse all hydrants…</option>${[...state.hydrants].sort((a,b)=>a.hydrant_number.localeCompare(b.hydrant_number,undefined,{numeric:true})).map(h=>{
@@ -803,9 +910,44 @@ function hydrantPickerHtml(pending){
     </div>
   `;
 }
+function updateLocationNotesDisplay(hydrantId){
+  const box = document.getElementById('locationNotesBox');
+  if(!box) return;
+  const hydrant = state.hydrants.find(h=>h.id===hydrantId);
+  if(!hydrant){ box.innerHTML = ''; return; }
+  renderNotesView();
+  function renderNotesView(){
+    box.innerHTML = `
+      <div class="hint" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;background:#f1efe8;border-radius:5px;padding:8px 10px;margin:-4px 0 12px;">
+        <span>${hydrant.location_notes ? esc(hydrant.location_notes) : '<i>No location notes yet.</i>'}</span>
+        <button type="button" id="editNotesBtn" style="background:none;border:none;cursor:pointer;font-size:15px;flex-shrink:0;" title="Edit location notes">✏️</button>
+      </div>`;
+    document.getElementById('editNotesBtn').onclick = renderNotesEdit;
+  }
+  function renderNotesEdit(){
+    box.innerHTML = `
+      <div class="field" style="margin:-4px 0 12px;">
+        <label>Location Notes</label>
+        <textarea id="notesEditArea">${esc(hydrant.location_notes||'')}</textarea>
+        <div class="btn-row" style="margin-top:6px;">
+          <button type="button" class="small ok" id="saveNotesBtn">Save</button>
+          <button type="button" class="small neutral" id="cancelNotesBtn">Cancel</button>
+        </div>
+      </div>`;
+    document.getElementById('cancelNotesBtn').onclick = renderNotesView;
+    document.getElementById('saveNotesBtn').onclick = async ()=>{
+      const newNotes = document.getElementById('notesEditArea').value;
+      const { error } = await sb.from('hydrants').update({ location_notes: newNotes || null }).eq('id', hydrantId);
+      if(error){ toast('Error: ' + error.message); return; }
+      hydrant.location_notes = newNotes || null;
+      toast('Location notes updated');
+      renderNotesView();
+    };
+  }
+}
 function wireHydrantPicker(afterPick){
   const dropdown = document.getElementById('manualDropdown');
-  dropdown.addEventListener('change', ()=>{ if(dropdown.value){ selectedHydrantId = dropdown.value; afterPick(selectedHydrantId); } });
+  dropdown.addEventListener('change', ()=>{ if(dropdown.value){ selectedHydrantId = dropdown.value; updateLocationNotesDisplay(selectedHydrantId); afterPick(selectedHydrantId); } });
   const input = document.getElementById('manualSearch');
   const results = document.getElementById('manualResults');
   input.addEventListener('input', ()=>{
@@ -822,6 +964,7 @@ function wireHydrantPicker(afterPick){
         selectedHydrantId = el.dataset.id;
         input.value = state.hydrants.find(h=>h.id===el.dataset.id).hydrant_number;
         results.style.display = 'none';
+        updateLocationNotesDisplay(selectedHydrantId);
         afterPick(selectedHydrantId);
       };
     });
@@ -916,11 +1059,7 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
         <div class="field"><label>Residual (psi)</label><input type="number" id="f_residual"></div>
         <div class="field"><label>Pitot (psi)</label><input type="number" id="f_pitot"></div>
       </div>
-      <div class="row3">
-        <div class="field"><label>Outlet Size (in)</label><input type="number" id="f_orifice" value="2.5"></div>
-        <div class="field"><label>Discharge Coef.</label><input type="number" id="f_coeff" value="${state.settings.default_discharge_coeff || '0.9'}"></div>
-        <div class="field"><label># Outlets</label><input type="number" id="f_outlets" value="1"></div>
-      </div>
+      <div class="field"><label>Gauge Flow Reading (GPM) — optional</label><input type="number" id="f_gauge_flow" placeholder="If your gauge shows one directly"></div>
       <div class="calc-box">
         <div class="calc-row"><span>Flow at test</span><span class="v" id="c_flow">— gpm</span></div>
         <div class="calc-row"><span>% Drop</span><span class="v" id="c_drop">—%</span></div>
@@ -938,20 +1077,21 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
       <button class="primary" id="saveBtn">Save &amp; Continue</button>
     </div>`;
 
-  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'flow_test'); });
+  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; updateLocationNotesDisplay(selectedHydrantId); wireDupWarning(selectedHydrantId, 'flow_test'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'flow_test'));
   clearFormDirty();
   wireDirtyTracking(main);
 
+  const FIXED_C = parseFloat(state.settings.default_discharge_coeff) || 0.9;
+  const FIXED_D = parseFloat(state.settings.default_outlet_size) || 2.5;
+  const FIXED_N = parseFloat(state.settings.default_num_outlets) || 1;
+
   function calc(){
     const P = parseFloat(document.getElementById('f_pitot').value);
-    const d = parseFloat(document.getElementById('f_orifice').value);
-    const C = parseFloat(document.getElementById('f_coeff').value) || 0.9;
-    const n = parseFloat(document.getElementById('f_outlets').value) || 1;
     const hs = parseFloat(document.getElementById('f_static').value);
     const hr = parseFloat(document.getElementById('f_residual').value);
     let flow=null, drop=null, flow20=null;
-    if(!isNaN(P) && !isNaN(d) && P>0 && d>0) flow = 29.83 * C * d*d * Math.sqrt(P) * n;
+    if(!isNaN(P) && P>0) flow = 29.83 * FIXED_C * FIXED_D*FIXED_D * Math.sqrt(P) * FIXED_N;
     if(!isNaN(hs) && !isNaN(hr) && hs>0) drop = ((hs-hr)/hs)*100;
     if(flow!==null && !isNaN(hs) && !isNaN(hr) && hs>20 && (hs-hr)>0) flow20 = flow * Math.pow((hs-20)/(hs-hr), 0.54);
     document.getElementById('c_flow').textContent = flow!==null ? Math.round(flow)+' gpm' : '— gpm';
@@ -959,7 +1099,7 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
     document.getElementById('c_flow20').textContent = flow20!==null ? Math.round(flow20)+' gpm' : '— gpm';
     return {flow, drop, flow20};
   }
-  ['f_pitot','f_orifice','f_coeff','f_outlets','f_static','f_residual'].forEach(id=>{
+  ['f_pitot','f_static','f_residual'].forEach(id=>{
     document.getElementById(id).addEventListener('input', calc);
   });
 
@@ -972,9 +1112,10 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
       static_psi: document.getElementById('f_static').value || null,
       residual_psi: document.getElementById('f_residual').value || null,
       pitot_psi: document.getElementById('f_pitot').value || null,
-      orifice_diameter: document.getElementById('f_orifice').value || null,
-      discharge_coeff: document.getElementById('f_coeff').value || null,
-      num_outlets: document.getElementById('f_outlets').value || null,
+      orifice_diameter: FIXED_D,
+      discharge_coeff: FIXED_C,
+      num_outlets: FIXED_N,
+      gauge_flow_gpm: document.getElementById('f_gauge_flow').value || null,
       flow_gpm: flow!==null ? Math.round(flow) : null,
       drop_pct: drop!==null ? drop.toFixed(1) : null,
       flow_at_20psi: flow20!==null ? Math.round(flow20) : null,
@@ -1012,7 +1153,7 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
       <button class="primary" id="saveBtn">Save &amp; Continue</button>
     </div>`;
 
-  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'condition_check'); });
+  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; updateLocationNotesDisplay(selectedHydrantId); wireDupWarning(selectedHydrantId, 'condition_check'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'condition_check'));
   clearFormDirty();
   wireDirtyTracking(main);
@@ -1074,7 +1215,7 @@ function renderSnowRemovalForm(main, headerHtml, pending, s, job){
       <button class="primary" id="saveBtn">Save &amp; Continue</button>
     </div>`;
 
-  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; wireDupWarning(selectedHydrantId, 'snow_removal'); });
+  document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; updateLocationNotesDisplay(selectedHydrantId); wireDupWarning(selectedHydrantId, 'snow_removal'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'snow_removal'));
   clearFormDirty();
   wireDirtyTracking(main);
@@ -1174,6 +1315,7 @@ async function renderMasterHydrantList(opts){
   const isChief = !!opts.isChief;
   let selCompany = isChief ? '' : state.company.id;
   let selBlock = isChief ? '' : state.block;
+  let currentSorted = [];
   const main = document.getElementById('main');
 
   const { data: allTests } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, condition, snow_condition_flag');
@@ -1193,12 +1335,18 @@ async function renderMasterHydrantList(opts){
           </div>
         </div>
         <button class="secondary" id="seeAllBtn">See All Hydrants (Citywide)</button>
+        <div class="btn-row" style="margin-top:10px;">
+          <button class="small" id="mhSnapshotCsvBtn">Export CSV</button>
+          <button class="small" id="mhSnapshotPdfBtn">Export PDF</button>
+        </div>
         <div id="mhList" style="margin-top:10px;"></div>
       </div>`;
     document.getElementById('topBackBtn').onclick = opts.backTo;
     document.getElementById('mhCompany').addEventListener('change', (e)=>{ selCompany = e.target.value; renderList(); });
     document.getElementById('mhBlock').addEventListener('change', (e)=>{ selBlock = e.target.value; renderList(); });
     document.getElementById('seeAllBtn').onclick = ()=>{ selCompany=''; selBlock=''; render(); };
+    document.getElementById('mhSnapshotCsvBtn').onclick = ()=> exportMasterSnapshotCsv(currentSorted);
+    document.getElementById('mhSnapshotPdfBtn').onclick = ()=> exportMasterSnapshotPdf(currentSorted);
     renderList();
   }
 
@@ -1207,6 +1355,7 @@ async function renderMasterHydrantList(opts){
     if(selCompany) hydrants = hydrants.filter(h=>h.company_id===selCompany);
     if(selBlock) hydrants = hydrants.filter(h=>h.block===selBlock);
     const sorted = [...hydrants].sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
+    currentSorted = sorted;
     document.getElementById('mhList').innerHTML = sorted.map(h => {
       const status = computeHydrantStatus(testsByHydrant[h.id] || []);
       return `<div class="status-row" data-hydrant="${h.id}">
@@ -1242,7 +1391,7 @@ async function renderHydrantDetail(hydrantId, backTo){
       ${(tests||[]).length === 0 ? '<div class="hint">No entries yet.</div>' : (tests||[]).map(t => `
         <div class="entry" style="cursor:default;">
           <div class="entry-top"><span>${esc(ACTIVITY_LABELS[t.sessions?.activity_type] || '—')}</span><span>${fmtDate(t.tested_at)}</span></div>
-          ${t.static_psi!=null ? `<div style="font-size:13px;">Static ${t.static_psi} · Residual ${t.residual_psi} · Pitot ${t.pitot_psi} · Flow ${t.flow_gpm??'—'} gpm · @20psi ${t.flow_at_20psi??'—'} gpm</div>` : ''}
+          ${t.static_psi!=null ? `<div style="font-size:13px;">Static ${t.static_psi} · Residual ${t.residual_psi} · Pitot ${t.pitot_psi} · Flow ${t.flow_gpm??'—'} gpm · @20psi ${t.flow_at_20psi??'—'} gpm${t.gauge_flow_gpm!=null ? ` · Gauge ${t.gauge_flow_gpm} gpm` : ''}</div>` : ''}
           ${t.condition ? `<span class="tag ${t.condition==='good'?'tag-good':'tag-bad'}">${t.condition==='good'?'Good':(t.condition==='repair'?'Needs Repair':'OOS')}</span>` : ''}
           ${t.wet_dry ? `<span class="tag ${t.wet_dry==='dry'?'tag-good':'tag-bad'}">${t.wet_dry==='dry'?'Dry':'Wet'}</span>` : ''}
           ${t.snow_cleared_status ? `<span class="tag ${t.snow_cleared_status==='cleared'?'tag-good':'tag-bad'}">${t.snow_cleared_status==='cleared'?'Cleared':'Not Cleared'}</span>` : ''}
@@ -1404,7 +1553,7 @@ async function renderLog(){
         ${r.wet_dry ? `<span class="tag ${r.wet_dry==='dry'?'tag-good':'tag-bad'}">${r.wet_dry==='dry'?'Dry':'Wet'}</span>` : ''}
         ${r.snow_cleared_status ? `<span class="tag ${r.snow_cleared_status==='cleared'?'tag-good':'tag-bad'}">${r.snow_cleared_status==='cleared'?'Cleared':'Not Cleared'}</span>` : ''}
         ${r.snow_condition_flag ? `<span class="tag tag-bad">${esc(r.snow_condition_flag)}</span>` : ''}
-        <div style="margin-top:6px;font-size:13px;">${r.static_psi!=null ? `Static ${r.static_psi} · Residual ${r.residual_psi} · Flow ${r.flow_gpm??'—'} gpm · @20psi ${r.flow_at_20psi??'—'} gpm` : ''}</div>
+        <div style="margin-top:6px;font-size:13px;">${r.static_psi!=null ? `Static ${r.static_psi} · Residual ${r.residual_psi} · Flow ${r.flow_gpm??'—'} gpm · @20psi ${r.flow_at_20psi??'—'} gpm${r.gauge_flow_gpm!=null ? ` · Gauge ${r.gauge_flow_gpm} gpm` : ''}` : ''}</div>
         ${r.notes ? `<div style="font-size:12.5px;font-style:italic;color:var(--steel);margin-top:4px;">"${esc(r.notes)}"</div>` : ''}
       </div>`).join('') : '<div class="card">No matching entries.</div>';
 
@@ -1899,17 +2048,17 @@ async function renderCampaignDetail(campaignId){
   };
 
   async function getCampaignScopedRows(){
-    const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, division_id), sessions(activity_type, tested_at)');
+    const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, block), sessions(activity_type, tested_at)');
     return (data||[]).filter(r => r.sessions && r.sessions.activity_type === campaign.activity_type && new Date(r.tested_at) >= cutoff
       && (!eligibleCompanyIds || eligibleCompanyIds.has(r.hydrants?.company_id)));
   }
   document.getElementById('exportCsvBtn').onclick = async ()=>{
     const rows = await getCampaignScopedRows();
     if(!rows.length){ toast('No data to export'); return; }
-    const headers = ['Hydrant','Address','Company','Division','Date','Static','Residual','Pitot','Flow','Condition','SnowCleared','SnowFlag','WetDry','Notes'];
+    const headers = ['Hydrant','Address','Company','List','Date','Static','Residual','Pitot','Flow','Condition','SnowCleared','SnowFlag','WetDry','Notes'];
     const out = rows.map(r => {
       const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
-      const divName = state.divisions.find(d=>d.id===r.hydrants?.division_id)?.name || '';
+      const divName = r.hydrants?.block || '';
       return [r.hydrants?.hydrant_number, r.hydrants?.address, compName, divName, fmtDate(r.tested_at), r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.condition, r.snow_cleared_status, r.snow_condition_flag, r.wet_dry, r.notes];
     });
     const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
@@ -1926,10 +2075,10 @@ async function renderCampaignDetail(campaignId){
     const doc = new jsPDF({ orientation: 'landscape' });
     doc.setFontSize(16); doc.text(campaign.name, 14, 16);
     doc.setFontSize(10); doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' records', 14, 23);
-    const headers = ['Hydrant','Address','Company','Division','Date','Condition','Wet/Dry','Notes'];
+    const headers = ['Hydrant','Address','Company','List','Date','Condition','Wet/Dry','Notes'];
     const body = rows.map(r => {
       const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
-      const divName = state.divisions.find(d=>d.id===r.hydrants?.division_id)?.name || '';
+      const divName = r.hydrants?.block || '';
       const cond = r.condition || r.snow_cleared_status || '';
       return [r.hydrants?.hydrant_number||'', r.hydrants?.address||'', compName, divName, fmtDate(r.tested_at), cond, r.wet_dry||'', r.notes||''];
     });
@@ -1993,6 +2142,12 @@ async function renderReportsTab(){
       </div>
       <button class="primary" id="csvExportBtn">Generate CSV</button>
       <button class="secondary" id="pdfExportBtn">Generate PDF</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Master List Snapshot</h3>
+      <div class="hint" style="margin-bottom:10px;">One row per hydrant — current status, and its latest flow test data regardless of what activity produced it. Uses the company selection above (all companies if none selected).</div>
+      <button class="primary" id="snapshotCsvBtn">Generate CSV</button>
+      <button class="secondary" id="snapshotPdfBtn">Generate PDF</button>
     </div>`;
   attachDatePicker('csv_from'); attachDatePicker('csv_to');
 
@@ -2026,6 +2181,8 @@ async function renderReportsTab(){
 
   document.getElementById('csvExportBtn').onclick = generateCustomCsv;
   document.getElementById('pdfExportBtn').onclick = generateCustomPdf;
+  document.getElementById('snapshotCsvBtn').onclick = ()=> exportMasterSnapshotCsv(getReportHydrants());
+  document.getElementById('snapshotPdfBtn').onclick = ()=> exportMasterSnapshotPdf(getReportHydrants());
   document.getElementById('checklistBtnChief').onclick = ()=> renderMasterHydrantList({ backTo: ()=>{ state.tab='reports'; renderChiefShell(); }, isChief:true });
 
   loadReportSummary();
@@ -2074,7 +2231,7 @@ async function loadReportSummary(){
 async function fetchExportRows(){
   const from = document.getElementById('csv_from').value;
   const to = document.getElementById('csv_to').value;
-  const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, division_id), sessions(activity_type, session_date, company_id, division_id)');
+  const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, block), sessions(activity_type, session_date, company_id)');
   let rows = data || [];
   if(from) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) >= from);
   if(to) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) <= to);
@@ -2088,10 +2245,10 @@ async function fetchExportRows(){
 async function generateCustomCsv(){
   const rows = await fetchExportRows();
   if(!rows.length){ toast('No matching data'); return; }
-  const headers = ['Hydrant','Address','Company','Division','Activity','Date','Static','Residual','Pitot','Flow','Drop%','Flow@20psi','Condition','SnowCleared','SnowFlag','WetDry','Notes'];
+  const headers = ['Hydrant','Address','Company','List','Activity','Date','Static','Residual','Pitot','Flow','Drop%','Flow@20psi','Condition','SnowCleared','SnowFlag','WetDry','Notes'];
   const out = rows.map(r => {
     const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
-    const divName = state.divisions.find(d=>d.id===r.hydrants?.division_id)?.name || '';
+    const divName = r.hydrants?.block || '';
     return [r.hydrants?.hydrant_number, r.hydrants?.address, compName, divName, ACTIVITY_LABELS[r.sessions?.activity_type] || '',
       fmtDate(r.tested_at), r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.drop_pct, r.flow_at_20psi,
       r.condition, r.snow_cleared_status, r.snow_condition_flag, r.wet_dry, r.notes];
@@ -2116,16 +2273,94 @@ async function generateCustomPdf(){
   doc.text('Lynn Fire Department — Hydrant Report', 14, 16);
   doc.setFontSize(10);
   doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' records', 14, 23);
-  const headers = ['Hydrant','Address','Company','Division','Activity','Date','Condition','Wet/Dry','Flow (gpm)','Notes'];
+  const headers = ['Hydrant','Address','Company','List','Activity','Date','Condition','Wet/Dry','Flow (gpm)','Notes'];
   const body = rows.map(r => {
     const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
-    const divName = state.divisions.find(d=>d.id===r.hydrants?.division_id)?.name || '';
+    const divName = r.hydrants?.block || '';
     const cond = r.condition || r.snow_cleared_status || '';
     return [r.hydrants?.hydrant_number||'', r.hydrants?.address||'', compName, divName,
       ACTIVITY_LABELS[r.sessions?.activity_type]||'', fmtDate(r.tested_at), cond, r.wet_dry||'', r.flow_gpm??'', r.notes||''];
   });
   doc.autoTable({ head: [headers], body, startY: 28, styles: { fontSize: 8 }, headStyles: { fillColor: [26,26,26] } });
   doc.save('hydrant-report-'+new Date().toISOString().slice(0,10)+'.pdf');
+  toast('PDF downloaded');
+}
+
+// ============================================================
+// MASTER LIST SNAPSHOT — one row per hydrant, current status +
+// latest flow data, regardless of which activity produced each
+// ============================================================
+async function fetchAllHydrantTestsWithSession(){
+  let all = [];
+  let from = 0;
+  const pageSize = 1000;
+  while(true){
+    const { data, error } = await sb.from('hydrant_tests').select('*, sessions(activity_type)').order('tested_at', {ascending:false}).range(from, from + pageSize - 1);
+    if(error){ console.error('hydrant_tests fetch:', error.message); break; }
+    all = all.concat(data || []);
+    if(!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
+async function buildMasterSnapshotRows(hydrantsList){
+  const allTests = await fetchAllHydrantTestsWithSession();
+  const byHydrant = {};
+  allTests.forEach(t => { (byHydrant[t.hydrant_id] = byHydrant[t.hydrant_id] || []).push(t); });
+
+  return hydrantsList.map(h => {
+    const tests = byHydrant[h.id] || []; // already sorted newest-first from the query
+    const status = computeHydrantStatus(tests);
+    const lastInteraction = tests[0] || null;
+    const lastFlow = tests.find(t => t.sessions && t.sessions.activity_type === 'flow_test') || null;
+    const compName = state.companies.find(c=>c.id===h.company_id)?.name || '';
+    return {
+      hydrant_number: h.hydrant_number,
+      address: h.address || '',
+      company: compName,
+      block: h.block || '',
+      status, statusLabel: STATUS_LABELS[status],
+      lastInteraction: lastInteraction ? fmtDate(lastInteraction.tested_at) : 'Never',
+      lastFlowTest: lastFlow ? fmtDate(lastFlow.tested_at) : 'Never',
+      static_psi: lastFlow?.static_psi ?? '',
+      residual_psi: lastFlow?.residual_psi ?? '',
+      pitot_psi: lastFlow?.pitot_psi ?? '',
+      flow_gpm: lastFlow?.flow_gpm ?? '',
+      flow_at_20psi: lastFlow?.flow_at_20psi ?? '',
+    };
+  });
+}
+
+async function exportMasterSnapshotCsv(hydrantsList){
+  if(!hydrantsList.length){ toast('No hydrants to export'); return; }
+  const rows = await buildMasterSnapshotRows(hydrantsList);
+  const headers = ['Hydrant','Address','Company','List','Status','Last Interaction','Last Flow Test','Static','Residual','Pitot','Flow','Flow@20psi'];
+  const out = rows.map(r => [r.hydrant_number, r.address, r.company, r.block, r.statusLabel, r.lastInteraction, r.lastFlowTest, r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.flow_at_20psi]);
+  const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const csv = [headers.join(','), ...out.map(r=>r.map(esc2).join(','))].join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'master-list-snapshot-'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('CSV downloaded');
+}
+
+async function exportMasterSnapshotPdf(hydrantsList){
+  if(!hydrantsList.length){ toast('No hydrants to export'); return; }
+  const rows = await buildMasterSnapshotRows(hydrantsList);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape' });
+  doc.setFontSize(16);
+  doc.text('Lynn Fire Department — Master Hydrant List', 14, 16);
+  doc.setFontSize(10);
+  doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' hydrants', 14, 23);
+  const headers = ['Hydrant','Address','Company','List','Status','Last Interaction','Last Flow Test','Static','Residual','Pitot','Flow','Flow@20psi'];
+  const body = rows.map(r => [r.hydrant_number, r.address, r.company, r.block, r.statusLabel, r.lastInteraction, r.lastFlowTest, r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.flow_at_20psi]);
+  doc.autoTable({ head: [headers], body, startY: 28, styles: { fontSize: 7 }, headStyles: { fillColor: [26,26,26] } });
+  doc.save('master-list-snapshot-'+new Date().toISOString().slice(0,10)+'.pdf');
   toast('PDF downloaded');
 }
 
@@ -2141,9 +2376,20 @@ function renderSettingsTab(){
   main.innerHTML = `
     <div class="card">
       <h3 style="margin-top:0;">Testing Settings</h3>
+      <div class="hint" style="margin-bottom:10px;">These apply to every Flow Test — companies can't change them per-entry.</div>
       <div class="field"><label>Default Retest Interval (months)</label><input id="s_retest" type="number" value="${state.settings.default_retest_interval_months || 12}"></div>
-      <div class="field"><label>Default Discharge Coefficient</label><input id="s_coeff" type="number" step="0.01" value="${state.settings.default_discharge_coeff || 0.9}"></div>
+      <div class="field"><label>Discharge Coefficient</label><input id="s_coeff" type="number" step="0.01" value="${state.settings.default_discharge_coeff || 0.9}"></div>
+      <div class="field"><label>Outlet Size (in)</label><input id="s_outlet" type="number" step="0.1" value="${state.settings.default_outlet_size || 2.5}"></div>
+      <div class="field"><label># Outlets</label><input id="s_numoutlets" type="number" value="${state.settings.default_num_outlets || 1}"></div>
       <button class="primary" id="saveSettings">Save Settings</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Report Hydrant Email Recipients</h3>
+      <div class="hint" style="margin-bottom:10px;">Used to pre-fill the notification email when a company reports a broken/OOS hydrant.</div>
+      <div class="field"><label>District Chief (C4)</label><input id="s_email_c4" type="email" value="${esc(state.settings.report_email_c4 || '')}"></div>
+      <div class="field"><label>Water & Sewer Rep</label><input id="s_email_water" type="email" value="${esc(state.settings.report_email_water || '')}"></div>
+      <div class="field"><label>LFD Water Liaison</label><input id="s_email_liaison" type="email" value="${esc(state.settings.report_email_liaison || '')}"></div>
+      <button class="primary" id="saveEmailsBtn">Save Recipients</button>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Company Login Code</h3>
@@ -2179,7 +2425,8 @@ function renderSettingsTab(){
       <div style="font-size:13px;">${state.hydrants.length} hydrants · ${state.members.length} members · ${state.companies.length} companies</div>
     </div>`;
 
-  document.querySelectorAll('#s_retest, #s_coeff').forEach(el=> el.addEventListener('input', ()=>markDirty('saveSettings')));
+  document.querySelectorAll('#s_retest, #s_coeff, #s_outlet, #s_numoutlets').forEach(el=> el.addEventListener('input', ()=>markDirty('saveSettings')));
+  document.querySelectorAll('#s_email_c4, #s_email_water, #s_email_liaison').forEach(el=> el.addEventListener('input', ()=>markDirty('saveEmailsBtn')));
   document.getElementById('sharedCodeInput').addEventListener('input', ()=>markDirty('saveSharedCodeBtn'));
   document.querySelectorAll('.companyCodeInput').forEach(el=> el.addEventListener('input', ()=>markDirty('saveCodesBtn')));
   document.querySelectorAll('.chiefFlag').forEach(el=> el.addEventListener('change', ()=>markDirty('saveChiefBtn')));
@@ -2188,8 +2435,18 @@ function renderSettingsTab(){
     await sb.from('app_settings').upsert([
       { key:'default_retest_interval_months', value: document.getElementById('s_retest').value },
       { key:'default_discharge_coeff', value: document.getElementById('s_coeff').value },
+      { key:'default_outlet_size', value: document.getElementById('s_outlet').value },
+      { key:'default_num_outlets', value: document.getElementById('s_numoutlets').value },
     ]);
     toast('Settings saved'); clearDirty('saveSettings'); loadRefData();
+  };
+  document.getElementById('saveEmailsBtn').onclick = async ()=>{
+    await sb.from('app_settings').upsert([
+      { key:'report_email_c4', value: document.getElementById('s_email_c4').value },
+      { key:'report_email_water', value: document.getElementById('s_email_water').value },
+      { key:'report_email_liaison', value: document.getElementById('s_email_liaison').value },
+    ]);
+    toast('Recipients saved'); clearDirty('saveEmailsBtn'); loadRefData();
   };
   document.getElementById('saveSharedCodeBtn').onclick = async ()=>{
     await sb.from('app_settings').upsert([{ key:'shared_company_login_code', value: document.getElementById('sharedCodeInput').value }]);
