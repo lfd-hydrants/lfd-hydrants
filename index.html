@@ -339,6 +339,16 @@ function renderDivisionSelect(){
   };
 }
 
+function renderMinimalShell(){
+  app.innerHTML = `
+    <header>
+      <div><h1>LFD Hydrant Testing</h1><div class="who">${esc(state.company.name)}</div></div>
+      <button id="switchBtn">Switch</button>
+    </header>
+    <main id="main"></main>`;
+  document.getElementById('switchBtn').onclick = ()=> guardNavigate(()=>{ clearLogin(); render(); });
+}
+
 function renderBlockSelect(){
   app.innerHTML = `
     <div class="login-wrap">
@@ -348,6 +358,8 @@ function renderBlockSelect(){
         <div class="row2">
           ${['A','B','C','D'].map(b=>`<button type="button" class="choice-btn" data-block="${b}" style="text-align:center;font-size:18px;font-weight:700;">List ${b}</button>`).join('')}
         </div>
+        <button class="secondary" id="allHydrantsBtn">All Hydrants</button>
+        <button class="secondary" id="reportHydrantBlockBtn" style="border-color:var(--red);color:var(--red-deep);">Report Hydrant</button>
         <button class="secondary" id="switchDivBtn">← Not ${esc(state.division.name)}?</button>
       </div>
     </div>`;
@@ -358,6 +370,14 @@ function renderBlockSelect(){
       render();
     };
   });
+  document.getElementById('allHydrantsBtn').onclick = ()=>{
+    renderMinimalShell();
+    renderMasterHydrantList({ backTo: renderBlockSelect, isChief:true });
+  };
+  document.getElementById('reportHydrantBlockBtn').onclick = ()=>{
+    renderMinimalShell();
+    renderReportHydrant(renderBlockSelect);
+  };
   document.getElementById('switchDivBtn').onclick = ()=>{
     state.division = null;
     localStorage.removeItem('lfd_division');
@@ -436,7 +456,7 @@ function renderCompanyShell(){
 
 function renderChiefShell(){
   const who = state.superAdmin ? `Admin — ${esc(state.superAdmin.username)}` : `${esc(state.company.name)} (Chief Access)`;
-  if(!['campaigns','reports','status','log','stats','settings'].includes(state.tab)) state.tab = 'campaigns';
+  if(!['campaigns','reports','log','stats','settings'].includes(state.tab)) state.tab = 'campaigns';
   app.innerHTML = `
     <header>
       <div><h1>LFD Hydrant Testing</h1><div class="who">${who}</div></div>
@@ -444,7 +464,6 @@ function renderChiefShell(){
     </header>
     <div class="tabs">
       <div class="tab" data-tab="campaigns">Campaigns</div>
-      <div class="tab" data-tab="status">Status</div>
       <div class="tab" data-tab="reports">Reports</div>
       <div class="tab" data-tab="log">Log</div>
       <div class="tab" data-tab="stats">Stats</div>
@@ -457,7 +476,6 @@ function renderChiefShell(){
     t.onclick = ()=> guardNavigate(()=>{ state.tab = t.dataset.tab; render(); });
   });
   if(state.tab === 'campaigns') renderCampaignsTab();
-  else if(state.tab === 'status') renderStatusTab();
   else if(state.tab === 'reports') renderReportsTab();
   else if(state.tab === 'log') renderLog();
   else if(state.tab === 'stats') renderStats();
@@ -679,12 +697,13 @@ function renderActivityPicker(){
   });
 }
 
-function renderReportHydrant(){
+function renderReportHydrant(backTo){
+  backTo = backTo || renderCompanyHome;
   const main = document.getElementById('main');
   let selectedId = null;
   let condition = null;
 
-  main.innerHTML = backBar('Home', 'topBackBtn') + `
+  main.innerHTML = backBar('Back', 'topBackBtn') + `
     <div class="card">
       <h3 style="margin-top:0;">Report Hydrant</h3>
       <div class="hint" style="margin-bottom:12px;">For flagging a hydrant on sight — no job or shift needed.</div>
@@ -702,7 +721,7 @@ function renderReportHydrant(){
       <div class="field"><label>Notes</label><textarea id="rh_notes" placeholder="What did you see?"></textarea></div>
       <button class="primary" id="rh_submitBtn">Report &amp; Notify</button>
     </div>`;
-  document.getElementById('topBackBtn').onclick = ()=> guardNavigate(renderCompanyHome);
+  document.getElementById('topBackBtn').onclick = ()=> guardNavigate(backTo);
   clearFormDirty();
   wireDirtyTracking(main);
 
@@ -751,8 +770,7 @@ function renderReportHydrant(){
     toast('Hydrant reported');
 
     const h = state.hydrants.find(x=>x.id===selectedId);
-    const recipients = [state.settings.report_email_c4, state.settings.report_email_water, state.settings.report_email_liaison]
-      .filter(Boolean).join(',');
+    const recipients = (state.settings.report_hydrant_emails || '').split(',').map(s=>s.trim()).filter(Boolean).join(',');
     if(recipients){
       const condLabel = condition === 'oos' ? 'Out of Service' : 'Damaged';
       const subject = encodeURIComponent(`Hydrant Report: ${h.hydrant_number} — ${condLabel}`);
@@ -763,7 +781,7 @@ function renderReportHydrant(){
     } else {
       toast('No notification emails configured in Settings');
     }
-    renderCompanyHome();
+    backTo();
   };
 }
 
@@ -1348,13 +1366,42 @@ function openEndShiftModal(){
 // ============================================================
 // MASTER HYDRANT LIST — status color-coded, click for history, chief-only repair
 // ============================================================
+// A hydrant's flag is "sticky" — once any company logs it as Damaged or
+// OOS, that stays the hydrant's status even if another company later logs
+// a routine "Good" test on it. It only clears when an admin explicitly
+// resets it via Mark Repaired. An admin reset is identified as a
+// condition:'good' entry with no session_id (routine field entries always
+// have a session_id; Report Hydrant never logs 'good').
+// Returns { status, mostRecentFlag } — status is the WORST flag logged
+// since the last reset (drives the color); mostRecentFlag (if different
+// from status) is the latest flag logged, for "as of" context.
 function computeHydrantStatus(tests){
-  const relevant = tests.filter(t => t.condition || t.snow_condition_flag).sort((a,b)=> new Date(b.tested_at)-new Date(a.tested_at));
-  if(!relevant.length) return 'good';
-  const latest = relevant[0];
-  if(latest.condition==='oos' || latest.snow_condition_flag==='oos') return 'oos';
-  if(latest.condition==='repair' || latest.snow_condition_flag==='damaged') return 'damaged';
-  return 'good';
+  const sorted = [...tests].sort((a,b)=> new Date(b.tested_at) - new Date(a.tested_at));
+  const resetEntry = sorted.find(t => t.condition === 'good' && !t.session_id);
+  const resetTime = resetEntry ? new Date(resetEntry.tested_at) : null;
+
+  function severity(t){
+    if(t.condition==='oos' || t.snow_condition_flag==='oos') return 2;
+    if(t.condition==='repair' || t.snow_condition_flag==='damaged') return 1;
+    return 0;
+  }
+  const flagsSinceReset = sorted.filter(t => {
+    if(severity(t) === 0) return false;
+    if(resetTime && new Date(t.tested_at) <= resetTime) return false;
+    return true;
+  });
+
+  if(!flagsSinceReset.length) return { status:'good', mostRecentFlag:null };
+
+  const worst = flagsSinceReset.reduce((max,t)=> severity(t)>severity(max)?t:max, flagsSinceReset[0]);
+  const mostRecent = flagsSinceReset[0]; // sorted newest-first, filter preserves order
+  const worstStatus = severity(worst)===2 ? 'oos' : 'damaged';
+  const mostRecentStatus = severity(mostRecent)===2 ? 'oos' : 'damaged';
+
+  return {
+    status: worstStatus,
+    mostRecentFlag: mostRecentStatus !== worstStatus ? { status: mostRecentStatus, date: mostRecent.tested_at } : null,
+  };
 }
 const STATUS_LABELS = { good:'Good', damaged:'Damaged', oos:'Out of Service' };
 const STATUS_SYMBOLS = { good:'✓', damaged:'!', oos:'✕' };
@@ -1363,12 +1410,20 @@ async function renderMasterHydrantList(opts){
   const isChief = !!opts.isChief;
   let selCompany = isChief ? '' : state.company.id;
   let selBlock = isChief ? '' : state.block;
+  let selStatus = '';
+  let selWetDry = '';
+  let sortBy = 'number';
   let currentSorted = [];
   const main = document.getElementById('main');
 
-  const { data: allTests } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, condition, snow_condition_flag');
+  const { data: allTests } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, condition, snow_condition_flag, session_id, wet_dry');
   const testsByHydrant = {};
   (allTests||[]).forEach(t=>{ (testsByHydrant[t.hydrant_id] = testsByHydrant[t.hydrant_id]||[]).push(t); });
+
+  function lastWetDry(hydrantId){
+    const tests = (testsByHydrant[hydrantId] || []).filter(t=>t.wet_dry).sort((a,b)=> new Date(b.tested_at)-new Date(a.tested_at));
+    return tests.length ? tests[0].wet_dry : null;
+  }
 
   function render(){
     main.innerHTML = backBar('Back', 'topBackBtn') + `
@@ -1382,6 +1437,23 @@ async function renderMasterHydrantList(opts){
             <select id="mhBlock"><option value="">All Lists</option>${['A','B','C','D'].map(b=>`<option value="${b}" ${selBlock===b?'selected':''}>List ${b}</option>`).join('')}</select>
           </div>
         </div>
+        <div class="row2">
+          <div class="field"><label>Status</label>
+            <select id="mhStatus"><option value="">All Statuses</option><option value="good" ${selStatus==='good'?'selected':''}>Good</option><option value="damaged" ${selStatus==='damaged'?'selected':''}>Damaged</option><option value="oos" ${selStatus==='oos'?'selected':''}>Out of Service</option></select>
+          </div>
+          <div class="field"><label>Wet / Dry</label>
+            <select id="mhWetDry"><option value="">All</option><option value="wet" ${selWetDry==='wet'?'selected':''}>Wet</option><option value="dry" ${selWetDry==='dry'?'selected':''}>Dry</option></select>
+          </div>
+        </div>
+        <div class="field"><label>Sort By</label>
+          <select id="mhSort">
+            <option value="number" ${sortBy==='number'?'selected':''}>Hydrant Number</option>
+            <option value="address" ${sortBy==='address'?'selected':''}>Address</option>
+            <option value="company" ${sortBy==='company'?'selected':''}>Company</option>
+            <option value="block" ${sortBy==='block'?'selected':''}>List</option>
+            <option value="status" ${sortBy==='status'?'selected':''}>Status (worst first)</option>
+          </select>
+        </div>
         <button class="secondary" id="seeAllBtn">See All Hydrants (Citywide)</button>
         <div class="btn-row" style="margin-top:10px;">
           <button class="small" id="mhSnapshotCsvBtn">Export CSV</button>
@@ -1392,7 +1464,10 @@ async function renderMasterHydrantList(opts){
     document.getElementById('topBackBtn').onclick = opts.backTo;
     document.getElementById('mhCompany').addEventListener('change', (e)=>{ selCompany = e.target.value; renderList(); });
     document.getElementById('mhBlock').addEventListener('change', (e)=>{ selBlock = e.target.value; renderList(); });
-    document.getElementById('seeAllBtn').onclick = ()=>{ selCompany=''; selBlock=''; render(); };
+    document.getElementById('mhStatus').addEventListener('change', (e)=>{ selStatus = e.target.value; renderList(); });
+    document.getElementById('mhWetDry').addEventListener('change', (e)=>{ selWetDry = e.target.value; renderList(); });
+    document.getElementById('mhSort').addEventListener('change', (e)=>{ sortBy = e.target.value; renderList(); });
+    document.getElementById('seeAllBtn').onclick = ()=>{ selCompany=''; selBlock=''; selStatus=''; selWetDry=''; render(); };
     document.getElementById('mhSnapshotCsvBtn').onclick = ()=> exportMasterSnapshotCsv(currentSorted);
     document.getElementById('mhSnapshotPdfBtn').onclick = ()=> exportMasterSnapshotPdf(currentSorted);
     renderList();
@@ -1402,13 +1477,31 @@ async function renderMasterHydrantList(opts){
     let hydrants = state.hydrants;
     if(selCompany) hydrants = hydrants.filter(h=>h.company_id===selCompany);
     if(selBlock) hydrants = hydrants.filter(h=>h.block===selBlock);
-    const sorted = [...hydrants].sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
-    currentSorted = sorted;
-    document.getElementById('mhList').innerHTML = sorted.map(h => {
-      const status = computeHydrantStatus(testsByHydrant[h.id] || []);
-      return `<div class="status-row" data-hydrant="${h.id}">
-        <span><span class="status-dot ${status}">${STATUS_SYMBOLS[status]}</span>${esc(h.hydrant_number)} — ${esc(h.address||'')}</span>
-        <span class="status-badge ${status}">${STATUS_SYMBOLS[status]} ${STATUS_LABELS[status]}</span>
+
+    let withStatus = hydrants.map(h => ({ h, statusInfo: computeHydrantStatus(testsByHydrant[h.id] || []), wetDry: lastWetDry(h.id) }));
+    if(selStatus) withStatus = withStatus.filter(x => x.statusInfo.status === selStatus);
+    if(selWetDry) withStatus = withStatus.filter(x => x.wetDry === selWetDry);
+
+    const severityOrder = { oos:0, damaged:1, good:2 };
+    const compFns = {
+      number: (a,b)=> a.h.hydrant_number.localeCompare(b.h.hydrant_number, undefined, {numeric:true}),
+      address: (a,b)=> (a.h.address||'').localeCompare(b.h.address||''),
+      company: (a,b)=> compareCompanyNames(state.companies.find(c=>c.id===a.h.company_id)?.name||'', state.companies.find(c=>c.id===b.h.company_id)?.name||''),
+      block: (a,b)=> (a.h.block||'').localeCompare(b.h.block||''),
+      status: (a,b)=> severityOrder[a.statusInfo.status] - severityOrder[b.statusInfo.status],
+    };
+    withStatus.sort(compFns[sortBy] || compFns.number);
+    currentSorted = withStatus.map(x=>x.h);
+
+    document.getElementById('mhList').innerHTML = withStatus.map(({h, statusInfo}) => {
+      const s = statusInfo.status;
+      const secondary = statusInfo.mostRecentFlag ? `<div class="hint" style="margin-left:22px;">Most recent: ${STATUS_LABELS[statusInfo.mostRecentFlag.status]} (${fmtDate(statusInfo.mostRecentFlag.date)})</div>` : '';
+      return `<div data-hydrant="${h.id}">
+        <div class="status-row">
+          <span><span class="status-dot ${s}">${STATUS_SYMBOLS[s]}</span>${esc(h.hydrant_number)} — ${esc(h.address||'')}</span>
+          <span class="status-badge ${s}">${STATUS_SYMBOLS[s]} ${STATUS_LABELS[s]}</span>
+        </div>
+        ${secondary}
       </div>`;
     }).join('') || '<div class="hint">No hydrants match.</div>';
     document.querySelectorAll('[data-hydrant]').forEach(row=>{
@@ -1423,16 +1516,18 @@ async function renderHydrantDetail(hydrantId, backTo){
   main.innerHTML = '<div class="card">Loading…</div>';
   const hydrant = state.hydrants.find(h=>h.id===hydrantId);
   const { data: tests } = await sb.from('hydrant_tests').select('*, sessions(activity_type, session_date)').eq('hydrant_id', hydrantId).order('tested_at', {ascending:false});
-  const status = computeHydrantStatus(tests||[]);
+  const statusInfo = computeHydrantStatus(tests||[]);
   const compName = state.companies.find(c=>c.id===hydrant.company_id)?.name || '—';
   const divName = state.divisions.find(d=>d.id===hydrant.division_id)?.name || '—';
+  const s = statusInfo.status;
 
   main.innerHTML = backBar('Back', 'topBackBtn') + `
     <div class="card">
       <h3 style="margin-top:0;">${esc(hydrant.hydrant_number)}</h3>
       <div class="hint">${esc(hydrant.address||'')} · ${esc(compName)} · ${esc(divName)}</div>
-      <span class="status-badge ${status}" style="margin-top:10px;">${STATUS_SYMBOLS[status]} ${STATUS_LABELS[status]}</span>
-      ${(state.isChief && status !== 'good') ? '<button class="secondary" id="repairBtn" style="border-color:var(--ok);color:var(--ok);margin-top:12px;">Mark Repaired — Back In Service</button>' : ''}
+      <span class="status-badge ${s}" style="margin-top:10px;">${STATUS_SYMBOLS[s]} ${STATUS_LABELS[s]}</span>
+      ${statusInfo.mostRecentFlag ? `<div class="hint" style="margin-top:4px;">Most recent: ${STATUS_LABELS[statusInfo.mostRecentFlag.status]} (${fmtDate(statusInfo.mostRecentFlag.date)})</div>` : ''}
+      ${(state.isChief && s !== 'good') ? '<button class="secondary" id="repairBtn" style="border-color:var(--ok);color:var(--ok);margin-top:12px;">Mark Repaired — Back In Service</button>' : ''}
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Test History</h3>
@@ -1463,7 +1558,7 @@ async function renderHydrantDetail(hydrantId, backTo){
 }
 
 // ============================================================
-// STATUS TAB — flagged hydrants only (chief), inline status update
+// Chief quick status-update helper (used from Log's edit modal)
 // ============================================================
 async function updateHydrantCondition(hydrantId, newCondition, refresh){
   const label = newCondition === 'good' ? 'Good' : (newCondition === 'repair' ? 'Needs Repair' : 'Out of Service');
@@ -1474,65 +1569,6 @@ async function updateHydrantCondition(hydrantId, newCondition, refresh){
   if(error){ toast('Error: ' + error.message); return; }
   toast('Status updated to ' + label);
   if(refresh) refresh();
-}
-
-async function renderStatusTab(){
-  const main = document.getElementById('main');
-  main.innerHTML = '<div class="card">Loading…</div>';
-
-  async function load(){
-    const { data: allTests } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, condition, snow_condition_flag');
-    const testsByHydrant = {};
-    (allTests||[]).forEach(t=>{ (testsByHydrant[t.hydrant_id] = testsByHydrant[t.hydrant_id]||[]).push(t); });
-
-    const flagged = state.hydrants
-      .map(h => ({ h, status: computeHydrantStatus(testsByHydrant[h.id] || []) }))
-      .filter(x => x.status !== 'good');
-
-    flagged.sort((a,b)=>{
-      const an = state.companies.find(c=>c.id===a.h.company_id)?.name || '';
-      const bn = state.companies.find(c=>c.id===b.h.company_id)?.name || '';
-      return compareCompanyNames(an, bn) || a.h.hydrant_number.localeCompare(b.h.hydrant_number, undefined, {numeric:true});
-    });
-
-    main.innerHTML = `
-      <div class="card">
-        <h3 style="margin-top:0;">Flagged Hydrants</h3>
-        <div class="hint" style="margin-bottom:10px;">Everything currently Damaged or Out of Service, department-wide. Wet/Dry doesn't affect this list.</div>
-        ${flagged.length === 0 ? '<div class="hint">Nothing flagged right now — all hydrants Good.</div>' : ''}
-      </div>
-      ${flagged.map(({h, status}) => {
-        const compName = state.companies.find(c=>c.id===h.company_id)?.name || '—';
-        return `
-        <div class="card" data-flaggedcard="${h.id}">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-            <div>
-              <div style="font-weight:700;font-size:15px;">${esc(h.hydrant_number)}</div>
-              <div class="hint">${esc(h.address||'')} · ${esc(compName)} · List ${esc(h.block||'—')}</div>
-            </div>
-            <span class="status-badge ${status}">${STATUS_SYMBOLS[status]} ${STATUS_LABELS[status]}</span>
-          </div>
-          <div class="btn-row" style="margin-top:10px;">
-            <button class="small" data-viewhistory="${h.id}">View History</button>
-            ${status !== 'damaged' ? `<button class="small" style="border-color:#8a5a10;color:#8a5a10;" data-setstatus="${h.id}" data-newstatus="repair">Set Damaged</button>` : ''}
-            ${status !== 'oos' ? `<button class="small danger" data-setstatus="${h.id}" data-newstatus="oos">Set OOS</button>` : ''}
-            <button class="small ok" data-setstatus="${h.id}" data-newstatus="good">Mark Repaired</button>
-          </div>
-        </div>`;
-      }).join('')}
-    `;
-
-    main.querySelectorAll('[data-viewhistory]').forEach(btn=>{
-      btn.onclick = ()=> renderHydrantDetail(btn.dataset.viewhistory, ()=>{ state.tab='status'; renderChiefShell(); });
-    });
-    main.querySelectorAll('[data-setstatus]').forEach(btn=>{
-      btn.onclick = async ()=>{
-        if(btn.dataset.newstatus === 'good' && !confirm('Confirm this hydrant has been repaired and is back in service?')) return;
-        await updateHydrantCondition(btn.dataset.setstatus, btn.dataset.newstatus, load);
-      };
-    });
-  }
-  load();
 }
 
 // ============================================================
@@ -1681,16 +1717,45 @@ async function openEditLogEntryModal(entryId, onSaved){
     `;
   }
 
+  let chiefActionsHtml = '';
+  if(state.isChief){
+    const { data: allTestsForHydrant } = await sb.from('hydrant_tests').select('condition, snow_condition_flag, session_id, tested_at').eq('hydrant_id', row.hydrant_id);
+    const currentStatus = computeHydrantStatus(allTestsForHydrant || []).status;
+    if(currentStatus !== 'good'){
+      chiefActionsHtml = `
+        <div class="field" style="background:#f1efe8;border-radius:6px;padding:10px;margin-top:4px;">
+          <label>Chief Actions — Hydrant Status</label>
+          <div class="btn-row">
+            ${currentStatus !== 'damaged' ? `<button type="button" class="small" style="border-color:#8a5a10;color:#8a5a10;" id="quickSetDamaged">Set Damaged</button>` : ''}
+            ${currentStatus !== 'oos' ? `<button type="button" class="small danger" id="quickSetOos">Set OOS</button>` : ''}
+            <button type="button" class="small ok" id="quickMarkRepaired">Mark Repaired</button>
+          </div>
+        </div>`;
+    }
+  }
+
   overlay.innerHTML = `
     <div class="card modal-card">
       <h3 style="margin-top:0;">Edit Entry — ${esc(row.hydrants?.hydrant_number)}</h3>
       <div class="hint" style="margin-bottom:10px;">${esc(row.hydrants?.address||'')} · ${esc(ACTIVITY_LABELS[activityType])} · ${fmtDate(row.tested_at)}</div>
       ${bodyHtml}
+      ${chiefActionsHtml}
       <button class="primary" id="saveEditBtn">Save Changes</button>
       <button class="secondary" id="cancelEditBtn">Cancel</button>
     </div>`;
   document.body.appendChild(overlay);
   document.getElementById('cancelEditBtn').onclick = ()=> overlay.remove();
+  ['quickSetDamaged','quickSetOos','quickMarkRepaired'].forEach(id=>{
+    const btn = document.getElementById(id);
+    if(!btn) return;
+    btn.onclick = async ()=>{
+      const newCondition = id === 'quickSetDamaged' ? 'repair' : id === 'quickSetOos' ? 'oos' : 'good';
+      if(newCondition === 'good' && !confirm('Confirm this hydrant has been repaired and is back in service?')) return;
+      await updateHydrantCondition(row.hydrant_id, newCondition, null);
+      overlay.remove();
+      if(onSaved) onSaved();
+    };
+  });
 
   let editCleared = row.snow_cleared_status, editFlag = row.snow_condition_flag;
   let editWetDry = row.wet_dry, editCond = row.condition;
@@ -1755,6 +1820,12 @@ async function openEditLogEntryModal(entryId, onSaved){
 // STATS — Today/Week/Month, Man-Hours, condensed Overdue + PDF
 // ============================================================
 let lastOverdueList = [];
+function companyShorthand(name){
+  const m = name.match(/^(Engine|Ladder)\s+(\d+)/i);
+  if(m) return m[1][0].toUpperCase() + m[2];
+  return name.replace(/[^A-Za-z0-9]/g,'').slice(0,3).toUpperCase();
+}
+
 function periodStats(sessions, tests, from){
   const s = sessions.filter(x => new Date(x.started_at) >= from);
   const minutes = s.reduce((sum,x)=>sum+(x.total_minutes||0),0);
@@ -1765,14 +1836,41 @@ function periodStats(sessions, tests, from){
   const entries = tests.filter(x => new Date(x.tested_at) >= from).length;
   return { shifts: s.length, hours: Math.round(minutes/60), manHours: Math.round(manMinutes/60), entries };
 }
-function statCard(title, stats){
+function statCard(title, stats, companiesActive, from, to){
   return `<div class="card"><h3 style="margin-top:0;">${esc(title)}</h3>
     <div class="stat-grid">
-      <div class="stat"><div class="n">${stats.shifts}</div><div class="l">Shifts</div></div>
       <div class="stat"><div class="n">${stats.hours}</div><div class="l">Hours</div></div>
       <div class="stat"><div class="n">${stats.manHours}</div><div class="l">Man-Hours</div></div>
-      <div class="stat"><div class="n">${stats.entries}</div><div class="l">Entries Logged</div></div>
-    </div></div>`;
+      <div class="stat" style="grid-column:1/-1;"><div class="n">${stats.entries}</div><div class="l">Entries Logged</div></div>
+    </div>
+    <div class="field" style="margin-top:10px;margin-bottom:0;">
+      <label>Companies Active (tap to view)</label>
+      <div class="chip-grid" data-period-chips="${title}">
+        ${companiesActive.length ? companiesActive.map(c=>`<div class="chip" data-companyperiod="${c.id}" data-from="${from.toISOString()}" data-to="${to.toISOString()}">${esc(companyShorthand(c.name))}</div>`).join('') : '<span class="hint">None</span>'}
+      </div>
+    </div>
+  </div>`;
+}
+
+async function renderCompanyPeriodHydrants(companyId, fromIso, toIso, backTo){
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="card">Loading…</div>';
+  const compName = state.companies.find(c=>c.id===companyId)?.name || 'Unknown';
+  const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number,address), sessions(activity_type, company_id)')
+    .gte('tested_at', fromIso).lte('tested_at', toIso);
+  const rows = (data||[]).filter(r => r.sessions?.company_id === companyId).sort((a,b)=> new Date(b.tested_at)-new Date(a.tested_at));
+
+  main.innerHTML = backBar('Back to Stats', 'topBackBtn') + `
+    <div class="card">
+      <h3 style="margin-top:0;">${esc(compName)} — Logged This Period</h3>
+      <div class="hint" style="margin-bottom:10px;">${rows.length} entries</div>
+      ${rows.length===0 ? '<div class="hint">Nothing logged in this window.</div>' : rows.map(r => `
+        <div class="entry" style="cursor:default;">
+          <div class="entry-top"><span>${esc(r.hydrants?.hydrant_number||'—')} · ${esc(r.hydrants?.address||'')}</span><span>${fmtDate(r.tested_at)}</span></div>
+          <span class="tag tag-good">${esc(ACTIVITY_LABELS[r.sessions?.activity_type]||'—')}</span>
+        </div>`).join('')}
+    </div>`;
+  document.getElementById('topBackBtn').onclick = backTo;
 }
 
 async function renderStats(){
@@ -1792,6 +1890,11 @@ async function renderStats(){
   const today = periodStats(s, t, startOfToday);
   const week = periodStats(s, t, startOfWeek);
   const month = periodStats(s, t, startOfMonth);
+
+  function companiesActiveSince(from){
+    const ids = [...new Set(s.filter(x=>new Date(x.started_at)>=from).map(x=>x.company_id))];
+    return ids.map(id=>state.companies.find(c=>c.id===id)).filter(Boolean).sort((a,b)=>compareCompanyNames(a.name,b.name));
+  }
 
   const lastTestByHydrant = {};
   t.forEach(x => {
@@ -1819,21 +1922,43 @@ async function renderStats(){
 
   const hoursByCompany = {};
   const manHoursByCompany = {};
-  month.shifts && s.filter(x=>new Date(x.started_at)>=startOfMonth).forEach(sess => {
+  s.filter(x=>new Date(x.started_at)>=startOfMonth).forEach(sess => {
     const name = state.companies.find(c=>c.id===sess.company_id)?.name || 'Unknown';
     hoursByCompany[name] = (hoursByCompany[name]||0) + (sess.total_minutes||0);
     const people = (sess.crew_member_ids||[]).length + (sess.oic_member_id?1:0);
     manHoursByCompany[name] = (manHoursByCompany[name]||0) + people*(sess.total_minutes||0);
   });
   const hoursRows = Object.keys(hoursByCompany).sort(compareCompanyNames).map(name=>[name, hoursByCompany[name], manHoursByCompany[name]||0]);
+  const grandTotalMins = Object.values(hoursByCompany).reduce((a,b)=>a+b,0);
+  const grandTotalManMins = Object.values(manHoursByCompany).reduce((a,b)=>a+b,0);
+
+  // Hours/Man-Hours per open campaign
+  const { data: openCampaigns } = await sb.from('campaigns').select('*').eq('status','open');
+  const campaignRows = [];
+  for(const camp of (openCampaigns||[])){
+    const { data: jobs } = await sb.from('jobs').select('id').eq('campaign_id', camp.id);
+    const jobIds = (jobs||[]).map(j=>j.id);
+    if(!jobIds.length){ campaignRows.push([camp.name, 0, 0]); continue; }
+    const campSessions = s.filter(sess => jobIds.includes(sess.job_id));
+    const mins = campSessions.reduce((sum,x)=>sum+(x.total_minutes||0),0);
+    const manMins = campSessions.reduce((sum,x)=>{
+      const people = (x.crew_member_ids||[]).length + (x.oic_member_id?1:0);
+      return sum + people*(x.total_minutes||0);
+    },0);
+    campaignRows.push([camp.name, mins, manMins]);
+  }
 
   main.innerHTML = `
-    ${statCard('Today', today)}
-    ${statCard('This Week', week)}
-    ${statCard('This Month', month)}
+    ${statCard('Today', today, companiesActiveSince(startOfToday), startOfToday, now)}
+    ${statCard('This Week', week, companiesActiveSince(startOfWeek), startOfWeek, now)}
+    ${statCard('This Month', month, companiesActiveSince(startOfMonth), startOfMonth, now)}
     <div class="card">
       <h3 style="margin-top:0;">Hours &amp; Man-Hours by Company (this month)</h3>
-      ${hoursRows.length ? `<table class="report"><thead><tr><th>Company</th><th>Hours</th><th>Man-Hours</th></tr></thead><tbody>${hoursRows.map(([name,mins,manMins])=>`<tr><td>${esc(name)}</td><td>${(mins/60).toFixed(1)}</td><td>${(manMins/60).toFixed(1)}</td></tr>`).join('')}</tbody></table>` : '<div class="hint">No shifts logged this month yet.</div>'}
+      ${hoursRows.length ? `<table class="report"><thead><tr><th>Company</th><th>Hours</th><th>Man-Hours</th></tr></thead><tbody>${hoursRows.map(([name,mins,manMins])=>`<tr><td>${esc(name)}</td><td>${(mins/60).toFixed(1)}</td><td>${(manMins/60).toFixed(1)}</td></tr>`).join('')}<tr style="font-weight:700;"><td>All Companies</td><td>${(grandTotalMins/60).toFixed(1)}</td><td>${(grandTotalManMins/60).toFixed(1)}</td></tr></tbody></table>` : '<div class="hint">No shifts logged this month yet.</div>'}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Hours &amp; Man-Hours by Campaign (open campaigns)</h3>
+      ${campaignRows.length ? `<table class="report"><thead><tr><th>Campaign</th><th>Hours</th><th>Man-Hours</th></tr></thead><tbody>${campaignRows.map(([name,mins,manMins])=>`<tr><td>${esc(name)}</td><td>${(mins/60).toFixed(1)}</td><td>${(manMins/60).toFixed(1)}</td></tr>`).join('')}</tbody></table>` : '<div class="hint">No open campaigns.</div>'}
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Overdue for Retest</h3>
@@ -1842,6 +1967,9 @@ async function renderStats(){
       ${overdue.length ? '<button class="secondary" id="overduePdfBtn">Download Full List (PDF)</button>' : ''}
     </div>
   `;
+  document.querySelectorAll('[data-companyperiod]').forEach(chip=>{
+    chip.onclick = ()=> renderCompanyPeriodHydrants(chip.dataset.companyperiod, chip.dataset.from, chip.dataset.to, renderStats);
+  });
   const pdfBtn = document.getElementById('overduePdfBtn');
   if(pdfBtn) pdfBtn.onclick = ()=>{
     const { jsPDF } = window.jspdf;
@@ -1998,13 +2126,14 @@ async function renderCampaignsTab(){
       }).join('')}
     </div>
     <div class="card"><h3 style="margin-top:0;">Closed Campaigns</h3>
-      ${closed.length===0 ? '<div class="hint">None yet.</div>' : closed.map(c=>`
-        <div class="job-row" data-campaign="${c.id}" style="cursor:pointer;">
-          <div class="jt">${esc(c.name)}</div>
-          <div class="jm">Closed ${fmtDate(c.closed_at)}</div>
-        </div>`).join('')}
+      ${closed.length===0 ? '<div class="hint">None yet.</div>' : `
+        <div class="field"><label>Search closed campaigns</label>${typeaheadHtml('closedCampaignSearch', 'Type a campaign name…')}</div>
+      `}
     </div>
   `;
+  if(closed.length > 0){
+    wireTypeahead('closedCampaignSearch', closed.map(c=>({ id:c.id, name: c.name + ' — closed ' + fmtDate(c.closed_at) })), (m)=> renderCampaignDetail(m.id));
+  }
   document.getElementById('newCampaignBtn').onclick = ()=> openCampaignFormModal(null, renderCampaignsTab);
   document.getElementById('yearFilter').addEventListener('change', (e)=>{ campaignYearFilter = e.target.value; renderCampaignsTab(); });
   document.getElementById('activityFilter').addEventListener('change', (e)=>{ campaignActivityFilter = e.target.value; renderCampaignsTab(); });
@@ -2137,202 +2266,143 @@ async function renderCampaignDetail(campaignId){
 }
 
 // ============================================================
-// CHIEF: REPORTS — filter-and-export only, chip-based multi-select filters
+// CHIEF: REPORTS — lean condition report. Click companies to add/
+// remove them from the selected list (empty = citywide). Good/Damaged/
+// OOS toggles narrow by current status. Output is deliberately just
+// Hydrant #, Address, and Date Last Checked — a quick "who needs a
+// look" list, not a data dump. Activity-based reporting lives in
+// Campaigns instead.
 // ============================================================
-let reportFlaggedOnly = false;
-let reportSelectedCompanyIds = new Set();
-let reportActivityFilter = 'flow_test';
-let exportWetDrySelected = new Set();
-let exportStatusSelected = new Set();
+let reportSelectedCompanyIds = [];
+let reportStatusToggles = new Set(); // 'good' | 'damaged' | 'oos', empty = all
 
 async function renderReportsTab(){
   const main = document.getElementById('main');
+  const available = state.companies.filter(c => !reportSelectedCompanyIds.includes(c.id));
   main.innerHTML = `
     <div class="card">
-      <div class="chip-grid" id="companyChips">
-        <div class="chip ${reportSelectedCompanyIds.size===0?'active':''}" data-all="1">All Companies</div>
-        ${state.companies.map(c=>`<div class="chip ${reportSelectedCompanyIds.has(c.id)?'active':''}" data-company="${c.id}">${esc(c.name)}</div>`).join('')}
+      <h3 style="margin-top:0;">Companies</h3>
+      <div class="hint" style="margin-bottom:8px;">Click a company to add it. Leave empty for all companies (citywide).</div>
+      <div class="chip-grid" id="availableChips">
+        ${available.map(c=>`<div class="chip" data-add="${c.id}">+ ${esc(c.name)}</div>`).join('') || '<div class="hint">All companies selected.</div>'}
       </div>
-      <div class="chip-grid" id="activityChips">
-        <div class="chip ${reportActivityFilter==='flow_test'?'active':''}" data-activity="flow_test">Flow Test</div>
-        <div class="chip ${reportActivityFilter==='condition_check'?'active':''}" data-activity="condition_check">Condition Check</div>
-        <div class="chip ${reportActivityFilter==='snow_removal'?'active':''}" data-activity="snow_removal">Snow Removal</div>
+      <div class="field"><label>Selected (${reportSelectedCompanyIds.length ? reportSelectedCompanyIds.length : 'All'})</label>
+        <div class="chip-grid" id="selectedChips" style="min-height:34px;border:1.5px dashed var(--line);border-radius:6px;padding:8px;">
+          ${reportSelectedCompanyIds.length ? reportSelectedCompanyIds.map(id=>{
+            const c = state.companies.find(x=>x.id===id);
+            return c ? `<div class="chip active" data-remove="${id}">${esc(c.name)} ×</div>` : '';
+          }).join('') : '<span class="hint">Citywide — no company filter</span>'}
+        </div>
       </div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-top:4px;">
-        <input type="checkbox" id="flaggedOnly" style="width:auto;" ${reportFlaggedOnly?'checked':''}> Flagged only
-      </label>
-      <button class="secondary" id="checklistBtnChief" style="margin-top:10px;">Master Hydrant List</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Condition</h3>
+      <div class="chip-grid">
+        <div class="chip ${reportStatusToggles.size===0?'active':''}" data-cond-all="1">All</div>
+        <div class="chip ${reportStatusToggles.has('good')?'active':''}" data-cond="good">Good</div>
+        <div class="chip ${reportStatusToggles.has('damaged')?'active':''}" data-cond="damaged">Damaged</div>
+        <div class="chip ${reportStatusToggles.has('oos')?'active':''}" data-cond="oos">Out of Service</div>
+      </div>
     </div>
     <div class="card" id="reportSummary">Loading…</div>
     <div class="card">
-      <h3 style="margin-top:0;">Custom Export</h3>
-      <div class="row2">
-        <div class="field"><label>From Date</label><input type="date" id="csv_from"></div>
-        <div class="field"><label>To Date</label><input type="date" id="csv_to"></div>
-      </div>
-      <div class="field"><label>Wet / Dry</label>
-        <div class="chip-grid" id="wetDryChips">
-          <div class="chip ${exportWetDrySelected.size===0?'active':''}" data-wd-all="1">All</div>
-          <div class="chip ${exportWetDrySelected.has('wet')?'active':''}" data-wd="wet">Wet</div>
-          <div class="chip ${exportWetDrySelected.has('dry')?'active':''}" data-wd="dry">Dry</div>
-        </div>
-      </div>
-      <div class="field"><label>Status / Condition</label>
-        <div class="chip-grid" id="statusChips">
-          <div class="chip ${exportStatusSelected.size===0?'active':''}" data-st-all="1">All</div>
-          <div class="chip ${exportStatusSelected.has('good')?'active':''}" data-st="good">Good</div>
-          <div class="chip ${exportStatusSelected.has('repair')?'active':''}" data-st="repair">Needs Repair</div>
-          <div class="chip ${exportStatusSelected.has('oos')?'active':''}" data-st="oos">Out of Service</div>
-          <div class="chip ${exportStatusSelected.has('cleared')?'active':''}" data-st="cleared">Cleared</div>
-          <div class="chip ${exportStatusSelected.has('not_cleared')?'active':''}" data-st="not_cleared">Not Cleared</div>
-          <div class="chip ${exportStatusSelected.has('damaged')?'active':''}" data-st="damaged">Damaged</div>
-        </div>
-      </div>
-      <button class="primary" id="csvExportBtn">Generate CSV</button>
-      <button class="secondary" id="pdfExportBtn">Generate PDF</button>
-    </div>
-    <div class="card">
-      <h3 style="margin-top:0;">Master List Snapshot</h3>
-      <div class="hint" style="margin-bottom:10px;">One row per hydrant — current status, and its latest flow test data regardless of what activity produced it. Uses the company selection above (all companies if none selected).</div>
-      <button class="primary" id="snapshotCsvBtn">Generate CSV</button>
-      <button class="secondary" id="snapshotPdfBtn">Generate PDF</button>
+      <button class="primary" id="reportCsvBtn">Generate CSV</button>
+      <button class="secondary" id="reportPdfBtn">Generate PDF</button>
     </div>`;
-  attachDatePicker('csv_from'); attachDatePicker('csv_to');
 
-  main.querySelectorAll('[data-all]').forEach(el=>{ el.onclick = ()=>{ reportSelectedCompanyIds = new Set(); renderReportsTab(); }; });
-  main.querySelectorAll('[data-company]').forEach(el=>{
+  main.querySelectorAll('[data-add]').forEach(el=>{
+    el.onclick = ()=>{ reportSelectedCompanyIds.push(el.dataset.add); renderReportsTab(); };
+  });
+  main.querySelectorAll('[data-remove]').forEach(el=>{
+    el.onclick = ()=>{ reportSelectedCompanyIds = reportSelectedCompanyIds.filter(id=>id!==el.dataset.remove); renderReportsTab(); };
+  });
+  main.querySelector('[data-cond-all]').onclick = ()=>{ reportStatusToggles = new Set(); renderReportsTab(); };
+  main.querySelectorAll('[data-cond]').forEach(el=>{
     el.onclick = ()=>{
-      const id = el.dataset.company;
-      if(reportSelectedCompanyIds.has(id)) reportSelectedCompanyIds.delete(id); else reportSelectedCompanyIds.add(id);
+      const v = el.dataset.cond;
+      if(reportStatusToggles.has(v)) reportStatusToggles.delete(v); else reportStatusToggles.add(v);
       renderReportsTab();
     };
   });
-  main.querySelectorAll('[data-activity]').forEach(el=>{ el.onclick = ()=>{ reportActivityFilter = el.dataset.activity; renderReportsTab(); }; });
-  document.getElementById('flaggedOnly').addEventListener('change', (e)=>{ reportFlaggedOnly = e.target.checked; loadReportSummary(); });
-
-  main.querySelectorAll('[data-wd-all]').forEach(el=>{ el.onclick = ()=>{ exportWetDrySelected = new Set(); renderReportsTab(); }; });
-  main.querySelectorAll('[data-wd]').forEach(el=>{
-    el.onclick = ()=>{
-      const v = el.dataset.wd;
-      if(exportWetDrySelected.has(v)) exportWetDrySelected.delete(v); else exportWetDrySelected.add(v);
-      renderReportsTab();
-    };
-  });
-  main.querySelectorAll('[data-st-all]').forEach(el=>{ el.onclick = ()=>{ exportStatusSelected = new Set(); renderReportsTab(); }; });
-  main.querySelectorAll('[data-st]').forEach(el=>{
-    el.onclick = ()=>{
-      const v = el.dataset.st;
-      if(exportStatusSelected.has(v)) exportStatusSelected.delete(v); else exportStatusSelected.add(v);
-      renderReportsTab();
-    };
-  });
-
-  document.getElementById('csvExportBtn').onclick = generateCustomCsv;
-  document.getElementById('pdfExportBtn').onclick = generateCustomPdf;
-  document.getElementById('snapshotCsvBtn').onclick = ()=> exportMasterSnapshotCsv(getReportHydrants());
-  document.getElementById('snapshotPdfBtn').onclick = ()=> exportMasterSnapshotPdf(getReportHydrants());
-  document.getElementById('checklistBtnChief').onclick = ()=> renderMasterHydrantList({ backTo: ()=>{ state.tab='reports'; renderChiefShell(); }, isChief:true });
+  document.getElementById('reportCsvBtn').onclick = generateConditionReportCsv;
+  document.getElementById('reportPdfBtn').onclick = generateConditionReportPdf;
 
   loadReportSummary();
 }
 
 function getReportHydrants(){
   let hydrants = state.hydrants;
-  if(reportSelectedCompanyIds.size > 0) hydrants = hydrants.filter(h => reportSelectedCompanyIds.has(h.company_id));
+  if(reportSelectedCompanyIds.length > 0) hydrants = hydrants.filter(h => reportSelectedCompanyIds.includes(h.company_id));
   return hydrants;
+}
+
+async function buildConditionReportRows(){
+  const hydrants = getReportHydrants();
+  const allTests = await fetchAllHydrantTestsWithSession();
+  const byHydrant = {};
+  allTests.forEach(t => { (byHydrant[t.hydrant_id] = byHydrant[t.hydrant_id] || []).push(t); });
+
+  let rows = hydrants.map(h => {
+    const tests = byHydrant[h.id] || [];
+    const statusInfo = computeHydrantStatus(tests);
+    const lastChecked = tests[0] ? tests[0].tested_at : null;
+    return { hydrant_number: h.hydrant_number, address: h.address || '', status: statusInfo.status, lastChecked };
+  });
+  if(reportStatusToggles.size > 0) rows = rows.filter(r => reportStatusToggles.has(r.status));
+  rows.sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
+  return rows;
 }
 
 async function loadReportSummary(){
   const summaryEl = document.getElementById('reportSummary');
   summaryEl.innerHTML = 'Loading…';
-  const hydrants = getReportHydrants();
-  const ids = hydrants.map(h=>h.id);
-  const { data: tests } = ids.length ? await sb.from('hydrant_tests').select('*, sessions(activity_type)').in('hydrant_id', ids) : { data: [] };
-  const relevant = (tests||[]).filter(t => t.sessions && t.sessions.activity_type === reportActivityFilter);
-  const latestByHydrant = {};
-  relevant.sort((a,b)=> new Date(b.tested_at) - new Date(a.tested_at)).forEach(t => { if(!latestByHydrant[t.hydrant_id]) latestByHydrant[t.hydrant_id] = t; });
-
-  let rows = hydrants.map(h => {
-    const t = latestByHydrant[h.id];
-    const flagged = t && (t.condition==='repair' || t.condition==='oos' || t.snow_condition_flag || t.snow_cleared_status==='not_cleared');
-    return { flagged, wet: t?.wet_dry === 'wet', neverTested: !t };
-  });
-  if(reportFlaggedOnly) rows = rows.filter(r => r.flagged);
-
-  const totalCount = rows.length;
-  const flaggedCount = rows.filter(r=>r.flagged).length;
-  const wetCount = rows.filter(r=>r.wet).length;
-  const neverTested = rows.filter(r=>r.neverTested).length;
-
+  const rows = await buildConditionReportRows();
+  const good = rows.filter(r=>r.status==='good').length;
+  const damaged = rows.filter(r=>r.status==='damaged').length;
+  const oos = rows.filter(r=>r.status==='oos').length;
   summaryEl.innerHTML = `
-    <h3 style="margin-top:0;">Summary — ${esc(ACTIVITY_LABELS[reportActivityFilter])}</h3>
+    <h3 style="margin-top:0;">Summary</h3>
     <div class="stat-grid">
-      <div class="stat"><div class="n">${totalCount}</div><div class="l">Hydrants in Scope</div></div>
-      <div class="stat"><div class="n overdue">${flaggedCount}</div><div class="l">Flagged</div></div>
-      <div class="stat"><div class="n">${wetCount}</div><div class="l">Wet</div></div>
-      <div class="stat"><div class="n">${neverTested}</div><div class="l">Never Tested</div></div>
+      <div class="stat"><div class="n">${rows.length}</div><div class="l">Hydrants in Scope</div></div>
+      <div class="stat"><div class="n">${good}</div><div class="l">Good</div></div>
+      <div class="stat"><div class="n overdue">${damaged}</div><div class="l">Damaged</div></div>
+      <div class="stat"><div class="n overdue">${oos}</div><div class="l">Out of Service</div></div>
     </div>
-    <div class="hint" style="margin-top:10px;">Use Custom Export below to generate the full CSV or PDF for this scope.</div>
   `;
 }
 
-async function fetchExportRows(){
-  const from = document.getElementById('csv_from').value;
-  const to = document.getElementById('csv_to').value;
-  const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, block), sessions(activity_type, session_date, company_id)');
-  let rows = data || [];
-  if(from) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) >= from);
-  if(to) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) <= to);
-  if(reportSelectedCompanyIds.size > 0) rows = rows.filter(r => reportSelectedCompanyIds.has(r.hydrants?.company_id));
-  if(reportActivityFilter) rows = rows.filter(r => r.sessions?.activity_type === reportActivityFilter);
-  if(exportWetDrySelected.size > 0) rows = rows.filter(r => exportWetDrySelected.has(r.wet_dry));
-  if(exportStatusSelected.size > 0) rows = rows.filter(r => exportStatusSelected.has(r.condition) || exportStatusSelected.has(r.snow_cleared_status) || exportStatusSelected.has(r.snow_condition_flag));
-  return rows;
-}
-
-async function generateCustomCsv(){
-  const rows = await fetchExportRows();
-  if(!rows.length){ toast('No matching data'); return; }
-  const headers = ['Hydrant','Address','Company','List','Activity','Date','Static','Residual','Pitot','Flow','Drop%','Flow@20psi','Condition','SnowCleared','SnowFlag','WetDry','Notes'];
-  const out = rows.map(r => {
-    const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
-    const divName = r.hydrants?.block || '';
-    return [r.hydrants?.hydrant_number, r.hydrants?.address, compName, divName, ACTIVITY_LABELS[r.sessions?.activity_type] || '',
-      fmtDate(r.tested_at), r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.drop_pct, r.flow_at_20psi,
-      r.condition, r.snow_cleared_status, r.snow_condition_flag, r.wet_dry, r.notes];
-  });
+async function generateConditionReportCsv(){
+  const rows = await buildConditionReportRows();
+  if(!rows.length){ toast('No matching hydrants'); return; }
+  const headers = ['Hydrant','Address','Date Last Checked'];
+  const out = rows.map(r => [r.hydrant_number, r.address, r.lastChecked ? fmtDate(r.lastChecked) : 'Never']);
   const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
   const csv = [headers.join(','), ...out.map(r=>r.map(esc2).join(','))].join('\n');
   const blob = new Blob([csv], {type:'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'hydrant-report-'+new Date().toISOString().slice(0,10)+'.csv';
+  a.href = url; a.download = 'condition-report-'+new Date().toISOString().slice(0,10)+'.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
   toast('CSV downloaded');
 }
 
-async function generateCustomPdf(){
-  const rows = await fetchExportRows();
-  if(!rows.length){ toast('No matching data'); return; }
+async function generateConditionReportPdf(){
+  const rows = await buildConditionReportRows();
+  if(!rows.length){ toast('No matching hydrants'); return; }
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation: 'landscape' });
+  const doc = new jsPDF();
   doc.setFontSize(16);
-  doc.text('Lynn Fire Department — Hydrant Report', 14, 16);
+  doc.text('Lynn Fire Department — Condition Report', 14, 16);
   doc.setFontSize(10);
-  doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' records', 14, 23);
-  const headers = ['Hydrant','Address','Company','List','Activity','Date','Condition','Wet/Dry','Flow (gpm)','Notes'];
-  const body = rows.map(r => {
-    const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
-    const divName = r.hydrants?.block || '';
-    const cond = r.condition || r.snow_cleared_status || '';
-    return [r.hydrants?.hydrant_number||'', r.hydrants?.address||'', compName, divName,
-      ACTIVITY_LABELS[r.sessions?.activity_type]||'', fmtDate(r.tested_at), cond, r.wet_dry||'', r.flow_gpm??'', r.notes||''];
-  });
-  doc.autoTable({ head: [headers], body, startY: 28, styles: { fontSize: 8 }, headStyles: { fillColor: [26,26,26] } });
-  doc.save('hydrant-report-'+new Date().toISOString().slice(0,10)+'.pdf');
+  doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' hydrants', 14, 23);
+  const headers = ['Hydrant','Address','Date Last Checked'];
+  const body = rows.map(r => [r.hydrant_number, r.address, r.lastChecked ? fmtDate(r.lastChecked) : 'Never']);
+  doc.autoTable({ head: [headers], body, startY: 28, styles: { fontSize: 9 }, headStyles: { fillColor: [26,26,26] } });
+  doc.save('condition-report-'+new Date().toISOString().slice(0,10)+'.pdf');
   toast('PDF downloaded');
 }
+
 
 // ============================================================
 // MASTER LIST SNAPSHOT — one row per hydrant, current status +
@@ -2359,16 +2429,20 @@ async function buildMasterSnapshotRows(hydrantsList){
 
   return hydrantsList.map(h => {
     const tests = byHydrant[h.id] || []; // already sorted newest-first from the query
-    const status = computeHydrantStatus(tests);
+    const statusInfo = computeHydrantStatus(tests);
     const lastInteraction = tests[0] || null;
     const lastFlow = tests.find(t => t.sessions && t.sessions.activity_type === 'flow_test') || null;
+    const lastWetDry = tests.find(t => t.wet_dry) || null;
     const compName = state.companies.find(c=>c.id===h.company_id)?.name || '';
+    let statusLabel = STATUS_LABELS[statusInfo.status];
+    if(statusInfo.mostRecentFlag) statusLabel += ` (most recent: ${STATUS_LABELS[statusInfo.mostRecentFlag.status]} ${fmtDate(statusInfo.mostRecentFlag.date)})`;
     return {
       hydrant_number: h.hydrant_number,
       address: h.address || '',
       company: compName,
       block: h.block || '',
-      status, statusLabel: STATUS_LABELS[status],
+      status: statusInfo.status, statusLabel,
+      wetDry: lastWetDry ? (lastWetDry.wet_dry === 'wet' ? 'Wet' : 'Dry') : '',
       lastInteraction: lastInteraction ? fmtDate(lastInteraction.tested_at) : 'Never',
       lastFlowTest: lastFlow ? fmtDate(lastFlow.tested_at) : 'Never',
       static_psi: lastFlow?.static_psi ?? '',
@@ -2383,8 +2457,8 @@ async function buildMasterSnapshotRows(hydrantsList){
 async function exportMasterSnapshotCsv(hydrantsList){
   if(!hydrantsList.length){ toast('No hydrants to export'); return; }
   const rows = await buildMasterSnapshotRows(hydrantsList);
-  const headers = ['Hydrant','Address','Company','List','Status','Last Interaction','Last Flow Test','Static','Residual','Pitot','Flow','Flow@20psi'];
-  const out = rows.map(r => [r.hydrant_number, r.address, r.company, r.block, r.statusLabel, r.lastInteraction, r.lastFlowTest, r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.flow_at_20psi]);
+  const headers = ['Hydrant','Address','Company','List','Status','Wet/Dry','Last Interaction','Last Flow Test','Static','Residual','Pitot','Flow','Flow@20psi'];
+  const out = rows.map(r => [r.hydrant_number, r.address, r.company, r.block, r.statusLabel, r.wetDry, r.lastInteraction, r.lastFlowTest, r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.flow_at_20psi]);
   const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
   const csv = [headers.join(','), ...out.map(r=>r.map(esc2).join(','))].join('\n');
   const blob = new Blob([csv], {type:'text/csv'});
@@ -2405,8 +2479,8 @@ async function exportMasterSnapshotPdf(hydrantsList){
   doc.text('Lynn Fire Department — Master Hydrant List', 14, 16);
   doc.setFontSize(10);
   doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' hydrants', 14, 23);
-  const headers = ['Hydrant','Address','Company','List','Status','Last Interaction','Last Flow Test','Static','Residual','Pitot','Flow','Flow@20psi'];
-  const body = rows.map(r => [r.hydrant_number, r.address, r.company, r.block, r.statusLabel, r.lastInteraction, r.lastFlowTest, r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.flow_at_20psi]);
+  const headers = ['Hydrant','Address','Company','List','Status','Wet/Dry','Last Interaction','Last Flow Test','Static','Residual','Pitot','Flow','Flow@20psi'];
+  const body = rows.map(r => [r.hydrant_number, r.address, r.company, r.block, r.statusLabel, r.wetDry, r.lastInteraction, r.lastFlowTest, r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.flow_at_20psi]);
   doc.autoTable({ head: [headers], body, startY: 28, styles: { fontSize: 7 }, headStyles: { fillColor: [26,26,26] } });
   doc.save('master-list-snapshot-'+new Date().toISOString().slice(0,10)+'.pdf');
   toast('PDF downloaded');
@@ -2719,11 +2793,18 @@ function renderSettingsTab(){
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Report Hydrant Email Recipients</h3>
-      <div class="hint" style="margin-bottom:10px;">Used to pre-fill the notification email when a company reports a broken/OOS hydrant.</div>
-      <div class="field"><label>District Chief (C4)</label><input id="s_email_c4" type="email" value="${esc(state.settings.report_email_c4 || '')}"></div>
-      <div class="field"><label>Water & Sewer Rep</label><input id="s_email_water" type="email" value="${esc(state.settings.report_email_water || '')}"></div>
-      <div class="field"><label>LFD Water Liaison</label><input id="s_email_liaison" type="email" value="${esc(state.settings.report_email_liaison || '')}"></div>
-      <button class="primary" id="saveEmailsBtn">Save Recipients</button>
+      <div class="hint" style="margin-bottom:10px;">Whoever should be notified when a company reports a broken/OOS hydrant — add or remove as many as needed.</div>
+      <div id="emailRecipientsList">
+        ${(state.settings.report_hydrant_emails || '').split(',').map(s=>s.trim()).filter(Boolean).map(email => `
+          <div style="display:flex;justify-content:space-between;align-items:center;background:#f1efe8;border-radius:5px;padding:7px 10px;margin-bottom:6px;font-size:13.5px;">
+            <span>${esc(email)}</span>
+            <button type="button" data-remove-email="${esc(email)}" style="background:none;border:none;color:var(--red-deep);font-weight:700;cursor:pointer;font-size:15px;">×</button>
+          </div>`).join('') || '<div class="hint">No recipients yet.</div>'}
+      </div>
+      <div class="row2" style="margin-top:8px;">
+        <input type="email" id="newRecipientEmail" placeholder="name@email.com">
+        <button type="button" class="secondary" id="addRecipientBtn" style="margin-top:0;">Add</button>
+      </div>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Company Login Code</h3>
@@ -2765,7 +2846,6 @@ function renderSettingsTab(){
     </div>`;
 
   document.querySelectorAll('#s_retest, #s_coeff, #s_outlet, #s_numoutlets').forEach(el=> el.addEventListener('input', ()=>markDirty('saveSettings')));
-  document.querySelectorAll('#s_email_c4, #s_email_water, #s_email_liaison').forEach(el=> el.addEventListener('input', ()=>markDirty('saveEmailsBtn')));
   document.getElementById('sharedCodeInput').addEventListener('input', ()=>markDirty('saveSharedCodeBtn'));
   document.querySelectorAll('.companyCodeInput').forEach(el=> el.addEventListener('input', ()=>markDirty('saveCodesBtn')));
   document.querySelectorAll('.chiefFlag').forEach(el=> el.addEventListener('change', ()=>markDirty('saveChiefBtn')));
@@ -2779,14 +2859,28 @@ function renderSettingsTab(){
     ]);
     toast('Settings saved'); clearDirty('saveSettings'); loadRefData();
   };
-  document.getElementById('saveEmailsBtn').onclick = async ()=>{
-    await sb.from('app_settings').upsert([
-      { key:'report_email_c4', value: document.getElementById('s_email_c4').value },
-      { key:'report_email_water', value: document.getElementById('s_email_water').value },
-      { key:'report_email_liaison', value: document.getElementById('s_email_liaison').value },
-    ]);
-    toast('Recipients saved'); clearDirty('saveEmailsBtn'); loadRefData();
+  document.getElementById('addRecipientBtn').onclick = async ()=>{
+    const newEmail = document.getElementById('newRecipientEmail').value.trim();
+    if(!newEmail){ toast('Enter an email address'); return; }
+    const current = (state.settings.report_hydrant_emails || '').split(',').map(s=>s.trim()).filter(Boolean);
+    if(current.includes(newEmail)){ toast('Already on the list'); return; }
+    current.push(newEmail);
+    await sb.from('app_settings').upsert([{ key:'report_hydrant_emails', value: current.join(',') }]);
+    toast('Recipient added');
+    await loadRefData();
+    renderSettingsTab();
   };
+  document.querySelectorAll('[data-remove-email]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const toRemove = btn.dataset.removeEmail;
+      const current = (state.settings.report_hydrant_emails || '').split(',').map(s=>s.trim()).filter(Boolean);
+      const updated = current.filter(e => e !== toRemove);
+      await sb.from('app_settings').upsert([{ key:'report_hydrant_emails', value: updated.join(',') }]);
+      toast('Recipient removed');
+      await loadRefData();
+      renderSettingsTab();
+    };
+  });
   document.getElementById('saveSharedCodeBtn').onclick = async ()=>{
     await sb.from('app_settings').upsert([{ key:'shared_company_login_code', value: document.getElementById('sharedCodeInput').value }]);
     toast('Login code saved'); clearDirty('saveSharedCodeBtn'); loadRefData();
