@@ -136,7 +136,72 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
-### Real hydrant data + List (block) assignment correction (this session) — requires migrations 010 + 011
+### Master List Snapshot report + Division/List export bug fix (this session) — no new SQL
+
+- **Master List Snapshot** — a new report type: one row per hydrant
+  (not a transaction log), showing its **current status color**
+  (Good/Damaged/OOS, same logic as the Master Hydrant List's dots),
+  last interaction date (any activity type), and its **most recent
+  Flow Test data** (static/residual/pitot/flow/flow-at-20psi) even if
+  that wasn't the latest thing logged for it. Available as CSV or PDF
+  from **two places**:
+  - **Reports tab** — new "Master List Snapshot" card, scoped by the
+    same company chip selection used for the existing Custom Export.
+  - **Master Hydrant List** screen — export buttons right there,
+    exporting exactly whatever's currently filtered/shown on screen.
+- **Bug fix**: the Custom Export (CSV/PDF) and Campaign Detail's
+  CSV/PDF export were still querying hydrants' old `division_id`
+  field for their "Division" column — which has been unused since the
+  List/Block correction, so that column was showing blank/wrong data.
+  Fixed to pull `block` instead, and the column is now correctly
+  labeled "List" in all four export functions.
+
+### Location notes, fixed flow-test settings, gauge reading, Report Hydrant (this session) — requires migrations 012 + 013
+
+- **New migrations**:
+  - `sql/012_notes_gauge_reporting_columns.sql` — adds
+    `hydrants.location_notes`, `hydrant_tests.gauge_flow_gpm`, and
+    `hydrant_tests.reported_by_company_id`.
+  - `sql/013_backfill_location_notes.sql` — backfills the "Location
+    Notes" data from the original spreadsheet (1,612 hydrants have
+    notes) — this got missed in the first real-data import and is
+    matched back in by `hydrant_number`, which is globally unique.
+- **Location Notes now shown on every entry screen** — once a hydrant
+  is selected (Flow Test, Condition Check, or Snow Removal), its
+  location notes appear right under the picker with a pencil icon to
+  edit them inline if they need correcting.
+- **Flow Test form simplified** — Outlet Size, Discharge Coefficient,
+  and # of Outlets are no longer per-entry fields. They're now fixed
+  values set once in Settings → Testing Settings and applied to every
+  flow calculation automatically; companies can't change them per test.
+- **Gauge Flow Reading (GPM)** — optional field on the Flow Test form
+  for a gauge's direct flow measurement. Purely informational — shown
+  alongside the calculated flow in the Log and Hydrant Detail history,
+  never used in the flow/drop/flow-at-20psi calculations.
+- **Report Hydrant** — a new button on Company Home for flagging a
+  hydrant on sight (e.g. spotted damaged while driving by), with no job
+  or shift required. Search the hydrant, mark Damaged or Out of
+  Service, add notes, submit. Records which company reported it and
+  opens a pre-filled email (`mailto:`) to whichever recipients are set
+  in Settings → Report Hydrant Email Recipients (District Chief,
+  Water & Sewer Rep, LFD Water Liaison) — the officer still has to hit
+  Send themselves; this doesn't email automatically without that click,
+  since there's no email-sending service wired up (deliberately kept
+  this way — see the option-A/option-B tradeoff discussed when this was
+  designed). No cost either way — a `mailto:` link is just a normal web
+  standard, not a paid service.
+
+**Deploying this update:**
+1. Run `sql/012_notes_gauge_reporting_columns.sql`
+2. Run `sql/013_backfill_location_notes.sql`
+3. Replace `index.html` on GitHub
+4. Go to Settings → Testing Settings and confirm Outlet Size / # Outlets
+   are set correctly (defaults: 2.5 / 1) — these now apply to every
+   flow test department-wide
+5. Go to Settings → Report Hydrant Email Recipients and fill in the
+   three addresses
+
+### Real hydrant data + List (block) assignment correction — requires migrations 010 + 011
 
 **This is the big one — real hydrant data goes live, and a structural
 correction to how hydrant lists are assigned.**
