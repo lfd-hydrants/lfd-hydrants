@@ -168,7 +168,9 @@ let state = {
 };
 let sessionCrew = [];
 
+let showingPasswordRecovery = false;
 function renderSetNewPassword(){
+  showingPasswordRecovery = true;
   app.innerHTML = `
     <div class="login-wrap">
       <div class="card">
@@ -190,6 +192,7 @@ function renderSetNewPassword(){
     await sb.auth.signInAnonymously();
     toast('Password updated — please log in');
     state.company = null; state.superAdmin = null;
+    showingPasswordRecovery = false;
     render();
   };
 }
@@ -214,7 +217,7 @@ async function init(){
     if(savedBlock) state.block = savedBlock;
   }catch(e){}
   await loadRefData();
-  render();
+  if(!showingPasswordRecovery) render();
 }
 
 async function fetchAllRows(table, filters){
