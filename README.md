@@ -147,6 +147,166 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
+### Report-only logins (this session) — requires migration 019
+
+- **`sql/019_report_only_logins.sql`** — adds `skip_list_assignment`
+  to `companies`.
+- For units that report hydrants but never test them (EMS, Communications,
+  Fire Prevention, etc.), a company can now be flagged so its login
+  **skips Division + List selection entirely** and lands straight on
+  Company Home — unchanged itself; they just use Report Hydrant /
+  Master Hydrant List / Log from there like anyone else. "Open Work"
+  and "Start New Job" simply show empty for these logins since they
+  never create jobs, but nothing prevents them from working if ever
+  needed.
+- **Settings**: Add Company has a new "Report-only login" checkbox,
+  and a new **Report-Only Logins** card lets this be toggled for any
+  existing company too.
+- Combined with the Company Emails feature from earlier, each flagged
+  party gets its own login and its own confirmation CC when it reports
+  a hydrant — no shared credentials needed between different reporting
+  units.
+
+### Company emails on Report Hydrant (this session) — requires migration 018
+
+- **`sql/018_company_emails.sql`** — adds an `email` column to
+  `companies`.
+- **Settings → Company Emails** (chief-only, matches the pattern for
+  Report Hydrant Email Recipients) — one email field per company.
+- **Report Hydrant now CC's the reporting company's own email** on the
+  notification draft, as a verifying copy — alongside the fixed 2-3
+  recipients (District Chief, Water & Sewer, LFD Water Liaison) who
+  always get the "To." If a company doesn't have an email set, the
+  report still goes out to the fixed recipients as before — nothing
+  breaks, the CC is just skipped.
+
+### "Complete List" option + single Wet checkbox (this session) — requires migration 017
+
+- **`sql/017_complete_list_option.sql`** — widens what a `jobs.block`
+  value can be (adding `'ALL'` alongside `A`/`B`/`C`/`D`) so a crew can
+  work through their **entire company roster in one sitting** instead
+  of navigating block by block. Real hydrants are untouched — a
+  hydrant is still always permanently assigned to a real A/B/C/D block;
+  this only widens what a *job* can be scoped to.
+  - New **"Complete [Company] List"** button on the List-select screen,
+    alongside A/B/C/D.
+  - Doesn't affect campaign or status tracking at all — completion math
+    is based on each hydrant's real block and test history, not which
+    job scope happened to log the entry, so entries logged under a
+    Complete List job still count correctly toward each real block's
+    progress everywhere else (Campaign Detail, Master Hydrant List,
+    Reports).
+  - Displays as "Complete List" everywhere a list/block would normally
+    show (header, Hydrant Entry screen) rather than a confusing "List
+    ALL".
+- **Wet/Dry simplified to a single "Wet?" checkbox** (assumed dry
+  unless checked) across Flow Test, Condition Check, and the Log's
+  edit modal — one tap instead of picking between two options every
+  time, since dry is the default assumption. No schema change; the
+  underlying `wet_dry` value is still stored exactly as `'wet'` or
+  `'dry'`, so nothing downstream (Reports, Master Hydrant List,
+  exports) needed to change.
+
+### Real database-enforced access control + Suggested Next Stop (this session) — requires migration 015 + manual Supabase setup
+
+**This is the big one, and it requires a manual step in the Supabase
+Dashboard that I can't do from here — read all the way through before
+deploying, since nobody can reach the chief dashboard until the manual
+step is done.**
+
+- **`sql/015_access_control.sql`** — replaces the old model (every
+  "chief-only" restriction was just which buttons the app chose to
+  show) with real database-enforced rules:
+  - Regular companies are **unchanged** — still fully open to read/
+    write hydrants, tests, jobs, sessions, campaigns citywide. That
+    was a deliberate decision from earlier in this project, not
+    something this migration touches.
+  - Only genuinely admin-level actions are now locked down at the
+    database level: Settings, campaign editing/closing (not
+    creation — a company's first job still auto-creates one),
+    company management (Add Company, login codes), and specifically
+    **Mark Repaired**.
+  - Mark Repaired is locked down by its exact signature — a
+    `hydrant_tests` row with `condition='good'` and no `session_id`.
+    Normal field entries always have a session_id; Report Hydrant
+    never logs 'good'. So this one specific shape requires a
+    privileged account, while every other kind of entry (including a
+    company logging Damaged/OOS through completely normal means)
+    stays exactly as open as it always was.
+- **Login model simplified**: C1/C2/C4's individual chief logins are
+  retired. In their place: **one shared "Admin" login** for district
+  chiefs day-to-day, plus the existing hidden deeper-tier login (kept
+  hidden, just renamed). Both are now **real Supabase Auth accounts**
+  — genuinely verified by the database when someone signs in, not an
+  app-level string comparison anyone with dev tools could bypass.
+  - The hidden login's username still never appears anywhere in the
+    app's source code (same property the old hidden `admin` login
+    had) — it's looked up dynamically against a small lookup table
+    instead of being hardcoded.
+  - Regular company login is **completely unchanged** — still the
+    shared anonymous session + app-level password check. That was
+    never the actual security gap.
+- **Settings cleanup**: removed the now-obsolete "Chief Login Codes"
+  and "Chief-Level Access" cards (companies no longer have any
+  chief/non-chief distinction — that's handled entirely by the new
+  real-auth accounts now). Add Company simplified to just a name
+  field.
+- **Suggested Next Stop** — text only, no map, no turn-by-turn (all
+  explicitly ruled out during design). A card at the top of all three
+  entry forms showing the next pending hydrant in the list's current
+  order, with a one-tap Accept button. Pulls from whatever order the
+  pending list already has — today that's hydrant-number order;
+  later, if GPS-based loop ordering gets built, this card starts using
+  that automatically with no changes needed to the feature itself.
+  The existing manual search/dropdown is untouched as the override
+  path for deviating from the suggestion.
+
+### Deploying this update — READ BEFORE RUNNING
+
+1. Run `sql/015_access_control.sql` in Supabase SQL Editor.
+2. **Do the manual setup at the bottom of that file before deploying
+   the new `index.html`** — create two real accounts in Supabase
+   Dashboard → Authentication → Users (the shared Admin login, and
+   your renamed hidden login), then register their user IDs via the
+   SQL snippet the file provides. Full step-by-step instructions are
+   in the file itself.
+3. Test both logins on the *current* (old) `index.html` first if
+   possible, or budget for a short window where chief access is down
+   between running this SQL and finishing the manual setup — until
+   both accounts exist and are registered, nobody can reach the chief
+   dashboard, including via the old C1/C2/C4 credentials (which stop
+   working the moment this SQL runs, since the RLS policies change
+   immediately).
+4. Once both privileged logins are confirmed working, replace
+   `index.html` on GitHub and tell every district chief the new shared
+   Admin password. The old individual C1/C2/C4 passwords no longer do
+   anything.
+
+### Real member roster (this session) — requires migration 014
+
+- **`sql/014_real_member_roster.sql`** — imports the real 176-member
+  department roster, replacing the placeholder test names ("FF Test
+  001" etc). Names were cleaned from the source file: the trailing
+  `#`/`##` markers and the "(you)" tag were stripped per confirmation,
+  and the redundant "FF" suffix was dropped (real ranks — Lieutenant,
+  Captain, District Chief — are kept, since those stay part of the
+  display name; there's no separate rank column, matching how simple
+  the OIC/crew search picker is meant to stay).
+  - **Read the warning comment in the file before running** — it
+    clears the `members` table first. Any shifts already logged
+    against the old placeholder test names will keep their historical
+    entries intact (the foreign key doesn't cascade-delete), but those
+    old entries' OIC/crew names will show blank once the placeholder
+    rows are gone, since the names only ever lived in `members`. Worth
+    exporting a backup first if any of that test-era history needs to
+    stay readable.
+
+### Log filter fix: respects sticky-flag status, not stale per-row data (this session) — no new SQL
+
+- **Bug fix, directly caused by the sticky-flag logic added last session**: Log's "Needs Attention" filter (and the Damaged/OOS filters) used to check each individual entry's own condition — meaning a hydrant's old flagged rows would keep showing up under Needs Attention forever, even after a chief marked it repaired, since nothing told Log that hydrant's overall status had changed.
+- **Fixed**: those filters now check each hydrant's **current computed status** (same worst-since-reset logic used everywhere else), not the row's own historical fields. Once a hydrant is marked back in service, none of its rows — old or new — show up under Needs Attention/Damaged/OOS anymore.
+- Renamed the remaining per-row filters (Good/Wet/Dry/Cleared/Not Cleared) to say "(this entry)" in the dropdown, to make clear those are point-in-time facts about that specific visit, not the hydrant's current state — distinguishing them from the now-current-status-based filters.
+
 ### Structural reorganization: sticky flags, Status→Log merge, lean Reports, Campaigns dropdown, flexible email list, Stats drill-down (this session) — no new SQL
 
 - **Sticky flag status logic (real behavior change)**: once any company logs a hydrant as Damaged or OOS, that stays the hydrant's displayed status — even if a different company later logs a routine "Good" test on it — until a **chief explicitly clears it** via Mark Repaired. The badge shown is the **worst status since the last reset**; if the most recent flag differs from that worst one, it's shown as secondary text ("Most recent: Damaged, Aug 12") so nothing gets buried. Applies everywhere status is computed: Master Hydrant List, Hydrant Detail, Log, and the Master List Snapshot export.
