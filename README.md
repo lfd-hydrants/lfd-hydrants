@@ -147,6 +147,27 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
+### Incomplete inspection warning + tracking list (this session) — no new SQL
+
+- **Flow Test now validates before saving**: if Static, Residual, or
+  Pitot is left blank, a warning shows exactly which readings are
+  missing, with two choices — **"Go Back & Complete"** (returns to the
+  form to finish it) or **"Save Incomplete & Continue"** (a deliberate
+  manual bypass, so an unusual situation in the field never blocks the
+  crew from moving on to the next hydrant). No schema change — those
+  fields were already nullable, this is purely a client-side check.
+- **Stats → Incomplete Inspections**: a new card, matching the
+  existing Overdue-for-Retest pattern exactly — total count, a
+  per-company breakdown table, and a PDF export. Shows every hydrant
+  whose **most recent** flow test is missing a reading (including ones
+  saved via the bypass above). If a hydrant gets properly retested
+  later, it naturally drops off this list — nothing needs resetting.
+- Also fixed a latent bug while in this code: Stats' main data fetch
+  was using a plain unpaginated query, which could have silently
+  truncated at 1,000 rows as `hydrant_tests` grows (same class of bug
+  fixed for hydrants earlier). Switched to the already-paginated
+  `fetchAllHydrantTestsWithSession()` helper used elsewhere.
+
 ### Report-only logins (this session) — requires migration 019
 
 - **`sql/019_report_only_logins.sql`** — adds `skip_list_assignment`
