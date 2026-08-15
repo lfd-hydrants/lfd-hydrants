@@ -168,7 +168,36 @@ let state = {
 };
 let sessionCrew = [];
 
+function renderSetNewPassword(){
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="card">
+        <h2 style="margin-top:0;">Set New Password</h2>
+        <div class="hint" style="margin-bottom:14px;">You followed a password reset link. Choose a new password below.</div>
+        <div class="field"><label>New Password</label><input id="newPw1" type="password" autocomplete="new-password"></div>
+        <div class="field"><label>Confirm New Password</label><input id="newPw2" type="password" autocomplete="new-password"></div>
+        <button class="primary" id="setNewPwBtn">Save New Password</button>
+      </div>
+    </div>`;
+  document.getElementById('setNewPwBtn').onclick = async ()=>{
+    const p1 = document.getElementById('newPw1').value;
+    const p2 = document.getElementById('newPw2').value;
+    if(!p1 || p1.length < 6){ toast('Password must be at least 6 characters'); return; }
+    if(p1 !== p2){ toast("Passwords don't match"); return; }
+    const { error } = await sb.auth.updateUser({ password: p1 });
+    if(error){ toast('Error: ' + error.message); return; }
+    await sb.auth.signOut();
+    await sb.auth.signInAnonymously();
+    toast('Password updated — please log in');
+    state.company = null; state.superAdmin = null;
+    render();
+  };
+}
+
 async function init(){
+  sb.auth.onAuthStateChange((event, session)=>{
+    if(event === 'PASSWORD_RECOVERY'){ renderSetNewPassword(); }
+  });
   const { data: sessionData } = await sb.auth.getSession();
   if(!sessionData.session){
     const { error } = await sb.auth.signInAnonymously();
@@ -282,6 +311,9 @@ function renderCompanyLogin(){
     const el = document.getElementById(id);
     el.addEventListener('focus', ()=> el.removeAttribute('readonly'));
   });
+  document.getElementById('loginPass').addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter'){ e.preventDefault(); document.getElementById('loginBtn').click(); }
+  });
   wireTypeahead('loginCompany', state.companies);
   document.getElementById('loginBtn').onclick = async ()=>{
     const idFromClick = document.getElementById('loginCompany_value').value;
@@ -293,19 +325,24 @@ function renderCompanyLogin(){
       ? state.companies.find(c => c.id === idFromClick)
       : state.companies.find(c => c.name.toLowerCase() === idText.toLowerCase());
     if(company){
-      const expected = company.is_chief ? company.access_code : sharedCode();
-      if(!pass || pass !== expected){ toast('Incorrect password'); return; }
+      if(!pass || pass !== sharedCode()){ toast('Incorrect password'); return; }
       state.company = { id: company.id, name: company.name };
       localStorage.setItem('lfd_company', JSON.stringify(state.company));
       render();
       return;
     }
-    const { data: adminRow } = await sb.from('super_admins').select('*').ilike('username', idText).maybeSingle();
-    if(adminRow && pass && adminRow.access_code === pass){
-      state.superAdmin = { username: adminRow.username };
-      localStorage.setItem('lfd_super_admin', JSON.stringify(state.superAdmin));
-      render();
-      return;
+    // Not a company — check if this is a privileged (admin) login.
+    // Real Supabase Auth verifies the password now, not an app-level
+    // string comparison, so this is genuinely enforced by the database.
+    const { data: privRow } = await sb.from('privileged_logins').select('*').ilike('username', idText).maybeSingle();
+    if(privRow && pass){
+      const { data: authData, error: authError } = await sb.auth.signInWithPassword({ email: privRow.auth_email, password: pass });
+      if(!authError && authData.user){
+        state.superAdmin = { username: privRow.username };
+        localStorage.setItem('lfd_super_admin', JSON.stringify(state.superAdmin));
+        render();
+        return;
+      }
     }
     toast('Incorrect login');
   };
@@ -388,11 +425,19 @@ function renderBlockSelect(){
 // ============================================================
 // SHELLS
 // ============================================================
-function clearLogin(){
+async function clearLogin(){
   state.company = null; state.division = null; state.block = null; state.superAdmin = null; state.isChief = false;
   localStorage.removeItem('lfd_company'); localStorage.removeItem('lfd_division');
   localStorage.removeItem('lfd_block');
   localStorage.removeItem('lfd_super_admin'); localStorage.removeItem('lfd_active_session_id');
+  // If the outgoing session was a real privileged login (not the shared
+  // anonymous one companies use), sign out of it and re-establish an
+  // anonymous session so company logins keep working correctly next.
+  const { data: sessionData } = await sb.auth.getSession();
+  if(sessionData.session && !sessionData.session.user.is_anonymous){
+    await sb.auth.signOut();
+    await sb.auth.signInAnonymously();
+  }
 }
 function backBar(label, id){
   return `<div class="back-bar"><button class="small neutral" id="${id}">← ${esc(label)}</button></div>`;
@@ -420,8 +465,6 @@ function wireDirtyTracking(container){
 function render(){
   if(state.superAdmin){ state.isChief = true; renderChiefShell(); return; }
   if(!state.company){ renderCompanyLogin(); return; }
-  const companyRow = state.companies.find(c => c.id === state.company.id);
-  if(companyRow && companyRow.is_chief){ state.isChief = true; renderChiefShell(); return; }
   state.isChief = false;
   if(!state.division){ renderDivisionSelect(); return; }
   if(!state.block){ renderBlockSelect(); return; }
@@ -959,6 +1002,25 @@ function renderStartShift(prefill, editingSession){
 // ============================================================
 let selectedHydrantId = null;
 
+function suggestedNextStopHtml(pending){
+  if(!pending.length) return '';
+  const next = pending[0];
+  return `
+    <div class="card" style="background:#eef6ee;border-color:var(--ok);padding:12px;">
+      <div class="hint" style="margin-bottom:2px;">Suggested Next Stop</div>
+      <div style="font-weight:700;font-size:15px;">${esc(next.hydrant_number)} — ${esc(next.address||'')}</div>
+      <button type="button" class="small ok" id="acceptSuggestedBtn" style="margin-top:8px;">Accept</button>
+    </div>`;
+}
+function wireSuggestedNextStop(pending){
+  const btn = document.getElementById('acceptSuggestedBtn');
+  if(!btn || !pending.length) return;
+  btn.onclick = ()=>{
+    const select = document.getElementById('f_hydrant');
+    select.value = pending[0].id;
+    select.dispatchEvent(new Event('change'));
+  };
+}
 function hydrantPickerHtml(pending){
   return `
     <div class="field"><label>Hydrant Number ${pending.length===0 ? '— all done for this job!' : ''}</label>
@@ -1118,6 +1180,7 @@ async function wireDupWarning(hydrantId, activityType){
 function renderFlowTestForm(main, headerHtml, pending, s, job){
   main.innerHTML = headerHtml + `
     <div class="card">
+      ${suggestedNextStopHtml(pending)}
       ${hydrantPickerHtml(pending)}
       ${dupWarningHtml()}
       <div class="row3">
@@ -1145,6 +1208,7 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
 
   document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; updateLocationNotesDisplay(selectedHydrantId); wireDupWarning(selectedHydrantId, 'flow_test'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'flow_test'));
+  wireSuggestedNextStop(pending);
   clearFormDirty();
   wireDirtyTracking(main);
 
@@ -1200,6 +1264,7 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
   let wetDry = 'dry'; let condition = null;
   main.innerHTML = headerHtml + `
     <div class="card">
+      ${suggestedNextStopHtml(pending)}
       ${hydrantPickerHtml(pending)}
       ${dupWarningHtml()}
       <div class="field"><label>Wet / Dry</label>
@@ -1221,6 +1286,7 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
 
   document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; updateLocationNotesDisplay(selectedHydrantId); wireDupWarning(selectedHydrantId, 'condition_check'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'condition_check'));
+  wireSuggestedNextStop(pending);
   clearFormDirty();
   wireDirtyTracking(main);
 
@@ -1263,6 +1329,7 @@ function renderSnowRemovalForm(main, headerHtml, pending, s, job){
 
   main.innerHTML = headerHtml + `
     <div class="card">
+      ${suggestedNextStopHtml(pending)}
       ${hydrantPickerHtml(pending)}
       ${dupWarningHtml()}
       <div class="field"><label>Cleared?</label>
@@ -1283,6 +1350,7 @@ function renderSnowRemovalForm(main, headerHtml, pending, s, job){
 
   document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; updateLocationNotesDisplay(selectedHydrantId); wireDupWarning(selectedHydrantId, 'snow_removal'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'snow_removal'));
+  wireSuggestedNextStop(pending);
   clearFormDirty();
   wireDirtyTracking(main);
 
@@ -1574,9 +1642,9 @@ async function updateHydrantCondition(hydrantId, newCondition, refresh){
 // ============================================================
 // LOG
 // ============================================================
-function isAttentionRow(r){
-  return r.condition === 'repair' || r.condition === 'oos' ||
-    r.snow_cleared_status === 'not_cleared' || !!r.snow_condition_flag;
+function isAttentionRow(r, hydrantStatusMap){
+  const currentStatus = hydrantStatusMap.get(r.hydrant_id);
+  return currentStatus && currentStatus !== 'good';
 }
 async function renderLog(){
   const main = document.getElementById('main');
@@ -1589,14 +1657,13 @@ async function renderLog(){
         <select id="filt_status">
           <option value="attention" selected>Needs Attention (default)</option>
           <option value="all">All</option>
-          <option value="good">Good</option>
-          <option value="repair">Needs Repair</option>
-          <option value="oos">Out of Service</option>
-          <option value="wet">Wet</option>
-          <option value="dry">Dry</option>
-          <option value="cleared">Cleared</option>
-          <option value="not_cleared">Not Cleared</option>
-          <option value="damaged">Damaged</option>
+          <option value="good">Good (this entry)</option>
+          <option value="damaged">Currently Damaged</option>
+          <option value="oos">Currently Out of Service</option>
+          <option value="wet">Wet (this entry)</option>
+          <option value="dry">Dry (this entry)</option>
+          <option value="cleared">Cleared (this entry)</option>
+          <option value="not_cleared">Not Cleared (this entry)</option>
         </select>
       </div>
       <div class="field"><label>Search Hydrant #</label><input id="filt_search" placeholder="e.g. H-101"></div>
@@ -1608,8 +1675,17 @@ async function renderLog(){
     <div id="logList">Loading…</div>`;
 
   async function load(){
-    const { data, error } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id)').order('tested_at', {ascending:false}).limit(150);
+    const [{ data, error }, { data: allStatusTests }] = await Promise.all([
+      sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id)').order('tested_at', {ascending:false}).limit(150),
+      sb.from('hydrant_tests').select('hydrant_id, condition, snow_condition_flag, session_id, tested_at'),
+    ]);
     if(error){ document.getElementById('logList').innerHTML = 'Error: '+esc(error.message); return; }
+
+    const byHydrant = {};
+    (allStatusTests||[]).forEach(t=>{ (byHydrant[t.hydrant_id] = byHydrant[t.hydrant_id]||[]).push(t); });
+    const hydrantStatusMap = new Map();
+    Object.keys(byHydrant).forEach(hid => hydrantStatusMap.set(hid, computeHydrantStatus(byHydrant[hid]).status));
+
     const companyFilter = document.getElementById('filt_company').value;
     const statusFilter = document.getElementById('filt_status').value;
     const search = document.getElementById('filt_search').value.trim().toLowerCase();
@@ -1620,15 +1696,14 @@ async function renderLog(){
     if(search) rows = rows.filter(r => r.hydrants && r.hydrants.hydrant_number.toLowerCase().includes(search));
     if(fromDate) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) >= fromDate);
     if(toDate) rows = rows.filter(r => r.tested_at && r.tested_at.slice(0,10) <= toDate);
-    if(statusFilter === 'attention') rows = rows.filter(isAttentionRow);
+    if(statusFilter === 'attention') rows = rows.filter(r => isAttentionRow(r, hydrantStatusMap));
     else if(statusFilter === 'good') rows = rows.filter(r => r.condition === 'good');
-    else if(statusFilter === 'repair') rows = rows.filter(r => r.condition === 'repair');
-    else if(statusFilter === 'oos') rows = rows.filter(r => r.condition === 'oos');
+    else if(statusFilter === 'damaged') rows = rows.filter(r => hydrantStatusMap.get(r.hydrant_id) === 'damaged');
+    else if(statusFilter === 'oos') rows = rows.filter(r => hydrantStatusMap.get(r.hydrant_id) === 'oos');
     else if(statusFilter === 'wet') rows = rows.filter(r => r.wet_dry === 'wet');
     else if(statusFilter === 'dry') rows = rows.filter(r => r.wet_dry === 'dry');
     else if(statusFilter === 'cleared') rows = rows.filter(r => r.snow_cleared_status === 'cleared');
     else if(statusFilter === 'not_cleared') rows = rows.filter(r => r.snow_cleared_status === 'not_cleared');
-    else if(statusFilter === 'damaged') rows = rows.filter(r => r.snow_condition_flag === 'damaged');
 
     document.getElementById('logList').innerHTML = rows.length ? rows.map(r => `
       <div class="entry" data-id="${r.id}">
@@ -2780,7 +2855,6 @@ function clearDirty(btnId){ const b = document.getElementById(btnId); if(b) b.cl
 
 function renderSettingsTab(){
   const main = document.getElementById('main');
-  const chiefCompanies = state.companies.filter(c=>c.is_chief);
   main.innerHTML = `
     <div class="card">
       <h3 style="margin-top:0;">Testing Settings</h3>
@@ -2808,27 +2882,18 @@ function renderSettingsTab(){
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Company Login Code</h3>
-      <div class="hint" style="margin-bottom:10px;">Shared password used by every non-chief company to sign in.</div>
+      <div class="hint" style="margin-bottom:10px;">Shared password used by every company to sign in.</div>
       <div class="field"><input type="text" id="sharedCodeInput" value="${esc(sharedCode())}"></div>
       <button class="primary" id="saveSharedCodeBtn">Save Login Code</button>
     </div>
     <div class="card">
-      <h3 style="margin-top:0;">Chief Login Codes</h3>
-      <div class="hint" style="margin-bottom:10px;">Each chief-level login has its own individual password.</div>
-      ${chiefCompanies.map(c => `<div class="field"><label>${esc(c.name)}</label><input type="text" class="companyCodeInput" data-company="${c.id}" value="${esc(c.access_code||'')}"></div>`).join('') || '<div class="hint">No chief-level companies yet.</div>'}
-      <button class="primary" id="saveCodesBtn">Save Chief Codes</button>
-    </div>
-    <div class="card">
-      <h3 style="margin-top:0;">Chief-Level Access</h3>
-      <div class="hint" style="margin-bottom:10px;">These logins see all companies' data instead of their own hydrant list.</div>
-      ${state.companies.map(c => `<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:6px;"><input type="checkbox" class="chiefFlag" data-company="${c.id}" style="width:auto;" ${c.is_chief?'checked':''}> ${esc(c.name)}</label>`).join('')}
-      <button class="primary" id="saveChiefBtn">Save Chief Access</button>
+      <h3 style="margin-top:0;">Admin Access</h3>
+      <div class="hint">The shared Admin login and hidden system login are managed directly in Supabase now (Authentication → Users), not from this screen — that's what makes them genuinely secure rather than just hidden in the app. Contact whoever set those up if a password needs to change.</div>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Add Company</h3>
+      <div class="hint" style="margin-bottom:10px;">Uses the shared company login code above — no separate password needed.</div>
       <div class="field"><label>Name</label><input type="text" id="newCompanyName" placeholder="e.g. EMS 1"></div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:10px;"><input type="checkbox" id="newCompanyChief" style="width:auto;"> Chief-level access</label>
-      <div class="field"><label>Login Code</label><input type="text" id="newCompanyCode" value="${esc(sharedCode())}" disabled></div>
       <button class="primary" id="addCompanyBtn">Add Company</button>
     </div>
     <div class="card">
@@ -2847,8 +2912,6 @@ function renderSettingsTab(){
 
   document.querySelectorAll('#s_retest, #s_coeff, #s_outlet, #s_numoutlets').forEach(el=> el.addEventListener('input', ()=>markDirty('saveSettings')));
   document.getElementById('sharedCodeInput').addEventListener('input', ()=>markDirty('saveSharedCodeBtn'));
-  document.querySelectorAll('.companyCodeInput').forEach(el=> el.addEventListener('input', ()=>markDirty('saveCodesBtn')));
-  document.querySelectorAll('.chiefFlag').forEach(el=> el.addEventListener('change', ()=>markDirty('saveChiefBtn')));
 
   document.getElementById('saveSettings').onclick = async ()=>{
     await sb.from('app_settings').upsert([
@@ -2885,30 +2948,11 @@ function renderSettingsTab(){
     await sb.from('app_settings').upsert([{ key:'shared_company_login_code', value: document.getElementById('sharedCodeInput').value }]);
     toast('Login code saved'); clearDirty('saveSharedCodeBtn'); loadRefData();
   };
-  document.getElementById('saveCodesBtn').onclick = async ()=>{
-    const updates = Array.from(document.querySelectorAll('.companyCodeInput')).map(input => ({ id: input.dataset.company, access_code: input.value }));
-    for(const u of updates) await sb.from('companies').update({ access_code: u.access_code }).eq('id', u.id);
-    toast('Chief codes saved'); clearDirty('saveCodesBtn'); loadRefData();
-  };
-  document.getElementById('saveChiefBtn').onclick = async ()=>{
-    const updates = Array.from(document.querySelectorAll('.chiefFlag')).map(cb => ({ id: cb.dataset.company, is_chief: cb.checked }));
-    for(const u of updates) await sb.from('companies').update({ is_chief: u.is_chief }).eq('id', u.id);
-    toast('Chief access saved'); clearDirty('saveChiefBtn'); loadRefData();
-  };
 
-  const chiefCheckbox = document.getElementById('newCompanyChief');
-  const codeInput = document.getElementById('newCompanyCode');
-  chiefCheckbox.addEventListener('change', ()=>{
-    if(chiefCheckbox.checked){ codeInput.disabled = false; codeInput.value = ''; codeInput.placeholder = 'Enter a unique password'; }
-    else { codeInput.disabled = true; codeInput.value = sharedCode(); }
-  });
   document.getElementById('addCompanyBtn').onclick = async ()=>{
     const name = document.getElementById('newCompanyName').value.trim();
-    const isChief = chiefCheckbox.checked;
-    const code = isChief ? codeInput.value.trim() : sharedCode();
     if(!name){ toast('Enter a name'); return; }
-    if(isChief && !code){ toast('Enter a login code for this chief login'); return; }
-    const { error } = await sb.from('companies').insert({ name, access_code: code, is_chief: isChief });
+    const { error } = await sb.from('companies').insert({ name, access_code: sharedCode(), is_chief: false });
     if(error){ toast('Error: ' + error.message); return; }
     toast('Company added');
     await loadRefData();
