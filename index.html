@@ -398,6 +398,7 @@ function renderBlockSelect(){
         <div class="row2">
           ${['A','B','C','D'].map(b=>`<button type="button" class="choice-btn" data-block="${b}" style="text-align:center;font-size:18px;font-weight:700;">List ${b}</button>`).join('')}
         </div>
+        <button type="button" class="choice-btn" data-block="ALL" style="text-align:center;font-size:16px;font-weight:700;">Complete ${esc(state.company.name)} List</button>
         <button class="secondary" id="allHydrantsBtn">All Hydrants</button>
         <button class="secondary" id="reportHydrantBlockBtn" style="border-color:var(--red);color:var(--red-deep);">Report Hydrant</button>
         <button class="secondary" id="switchDivBtn">← Not ${esc(state.division.name)}?</button>
@@ -470,6 +471,18 @@ function render(){
   if(state.superAdmin){ state.isChief = true; renderChiefShell(); return; }
   if(!state.company){ renderCompanyLogin(); return; }
   state.isChief = false;
+  const companyRow = state.companies.find(c => c.id === state.company.id);
+  if(companyRow && companyRow.skip_list_assignment){
+    // Report-only login (EMS, Communications, Fire Prevention, etc.) —
+    // no real hydrant list of their own, so skip Division + List and
+    // synthesize harmless placeholders so the shell/shift code (which
+    // expects both to exist) doesn't need any changes. This is
+    // recomputed on every render, so it survives page reloads too.
+    if(!state.division) state.division = { id: null, name: '' };
+    if(!state.block) state.block = 'ALL';
+    renderCompanyShell();
+    return;
+  }
   if(!state.division){ renderDivisionSelect(); return; }
   if(!state.block){ renderBlockSelect(); return; }
   renderCompanyShell();
@@ -478,7 +491,7 @@ function render(){
 function renderCompanyShell(){
   app.innerHTML = `
     <header>
-      <div><h1>LFD Hydrant Testing</h1><div class="who">${esc(state.company.name)} · ${esc(state.division.name)} · List ${esc(state.block)}</div></div>
+      <div><h1>LFD Hydrant Testing</h1><div class="who">${esc(state.company.name)}${state.division.name ? ' · ' + esc(state.division.name) : ''} · ${blockLabel(state.block)}</div></div>
       <div style="display:flex;gap:6px;">
         <button id="changeBlockBtn">Change List</button>
         <button id="switchBtn">Switch</button>
@@ -548,8 +561,13 @@ function memberTypeaheadHtml(id, placeholder){ return typeaheadHtml(id, placehol
 // ============================================================
 // COMPLETION HELPERS
 // ============================================================
+function blockLabel(block){
+  return block === 'ALL' ? 'Complete List' : `List ${block}`;
+}
 async function computeCompletionForCompanyBlock(companyId, block, activityType, cutoffDate){
-  const hydrantsFor = state.hydrants.filter(h => h.company_id === companyId && h.block === block);
+  const hydrantsFor = block === 'ALL'
+    ? state.hydrants.filter(h => h.company_id === companyId)
+    : state.hydrants.filter(h => h.company_id === companyId && h.block === block);
   const ids = hydrantsFor.map(h=>h.id);
   if(ids.length === 0) return { pending: [], total: 0, completedCount: 0 };
   const { data } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, sessions(activity_type)').in('hydrant_id', ids);
@@ -819,14 +837,17 @@ function renderReportHydrant(backTo){
     toast('Hydrant reported');
 
     const h = state.hydrants.find(x=>x.id===selectedId);
+    const companyRow = state.companies.find(c=>c.id===state.company.id);
     const recipients = (state.settings.report_hydrant_emails || '').split(',').map(s=>s.trim()).filter(Boolean).join(',');
-    if(recipients){
+    const ccEmail = companyRow?.email || '';
+    if(recipients || ccEmail){
       const condLabel = condition === 'oos' ? 'Out of Service' : 'Damaged';
       const subject = encodeURIComponent(`Hydrant Report: ${h.hydrant_number} — ${condLabel}`);
       const body = encodeURIComponent(
         `Hydrant: ${h.hydrant_number}\nAddress: ${h.address||''}\nCondition: ${condLabel}\nReported by: ${state.company.name}\nDate: ${fmtDate(new Date())}\n\nNotes:\n${notes||'(none)'}`
       );
-      window.location.href = `mailto:${recipients}?subject=${subject}&body=${body}`;
+      const ccParam = ccEmail ? `&cc=${encodeURIComponent(ccEmail)}` : '';
+      window.location.href = `mailto:${recipients}?subject=${subject}${ccParam}&body=${body}`;
     } else {
       toast('No notification emails configured in Settings');
     }
@@ -1146,7 +1167,7 @@ async function renderHydrantEntry(){
 
   const headerHtml = backBar('Home', 'topBackBtn') + `
     <div class="card" style="background:#f1efe8;">
-      <div style="font-size:13px;"><b>${esc(state.company.name)} · List ${esc(job.block||'—')} · ${esc(ACTIVITY_LABELS[job.activity_type])}</b> — job open since ${fmtDate(job.created_at)}</div>
+      <div style="font-size:13px;"><b>${esc(state.company.name)} · ${job.block ? blockLabel(job.block) : '—'} · ${esc(ACTIVITY_LABELS[job.activity_type])}</b> — job open since ${fmtDate(job.created_at)}</div>
       <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This shift started ${fmtDateTime(s.started_at)} · OIC: ${esc(oicName)} · Division: ${esc(divisionName)} · Crew: ${(s.crew_member_ids||[]).length}</div>
       <div style="font-size:12.5px;color:var(--steel);margin-top:2px;">This job: ${completedCount}/${total} complete</div>
       ${campaignLine}
@@ -1202,14 +1223,12 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
         <div class="calc-row"><span>% Drop</span><span class="v" id="c_drop">—%</span></div>
         <div class="calc-row"><span>Flow @ 20 psi</span><span class="v" id="c_flow20">— gpm</span></div>
       </div>
-      <div class="row2" style="margin-top:12px;">
-        <div class="field"><label>Condition</label>
+      <div class="field"><label>Condition</label>
           <select id="f_condition"><option value="good">Good</option><option value="repair">Needs Repair</option><option value="oos">Out of Service</option></select>
         </div>
-        <div class="field"><label>Wet / Dry</label>
-          <select id="f_wetdry"><option value="dry" selected>Dry</option><option value="wet">Wet</option></select>
-        </div>
-      </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0 12px;">
+          <input type="checkbox" id="f_wet" style="width:auto;"> Wet? <span class="hint" style="margin:0;">(assumed dry unless checked)</span>
+        </label>
       <div class="field"><label>Notes</label><textarea id="f_notes" placeholder="Leaks, missing cap, obstructed, etc."></textarea></div>
       <button class="primary" id="saveBtn">Save &amp; Continue</button>
     </div>`;
@@ -1258,7 +1277,7 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
       drop_pct: drop!==null ? drop.toFixed(1) : null,
       flow_at_20psi: flow20!==null ? Math.round(flow20) : null,
       condition: document.getElementById('f_condition').value,
-      wet_dry: document.getElementById('f_wetdry').value,
+      wet_dry: document.getElementById('f_wet').checked ? 'wet' : 'dry',
       notes: document.getElementById('f_notes').value || null,
     });
     if(error){ toast('Error: ' + error.message); return; }
@@ -1269,18 +1288,12 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
 }
 
 function renderConditionCheckForm(main, headerHtml, pending, s, job){
-  let wetDry = 'dry'; let condition = null;
+  let condition = null;
   main.innerHTML = headerHtml + `
     <div class="card">
       ${suggestedNextStopHtml(pending)}
       ${hydrantPickerHtml(pending)}
       ${dupWarningHtml()}
-      <div class="field"><label>Wet / Dry</label>
-        <div class="toggle-group">
-          <button type="button" class="toggle-btn active good" data-wetdry="dry">Dry</button>
-          <button type="button" class="toggle-btn" data-wetdry="wet">Wet</button>
-        </div>
-      </div>
       <div class="field"><label>Condition</label>
         <div class="toggle-group">
           <button type="button" class="toggle-btn" data-cond="good">Good</button>
@@ -1288,6 +1301,9 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
           <button type="button" class="toggle-btn" data-cond="oos">OOS</button>
         </div>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0 12px;">
+        <input type="checkbox" id="f_wet" style="width:auto;"> Wet? <span class="hint" style="margin:0;">(assumed dry unless checked)</span>
+      </label>
       <div class="field" id="notesWrap" style="display:none;"><label>Notes</label><textarea id="f_notes" placeholder="What's wrong?"></textarea></div>
       <button class="primary" id="saveBtn">Save &amp; Continue</button>
     </div>`;
@@ -1298,14 +1314,6 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
   clearFormDirty();
   wireDirtyTracking(main);
 
-  main.querySelectorAll('[data-wetdry]').forEach(btn=>{
-    btn.onclick = ()=>{
-      wetDry = btn.dataset.wetdry;
-      markFormDirty();
-      main.querySelectorAll('[data-wetdry]').forEach(b=>{ b.classList.toggle('active', b===btn); b.classList.remove('good','bad'); });
-      btn.classList.add(wetDry==='dry' ? 'good' : 'bad');
-    };
-  });
   main.querySelectorAll('[data-cond]').forEach(btn=>{
     btn.onclick = ()=>{
       condition = btn.dataset.cond;
@@ -1321,7 +1329,7 @@ function renderConditionCheckForm(main, headerHtml, pending, s, job){
     if(!hydrantId){ toast('Select a hydrant'); return; }
     if(!condition){ toast('Select a condition'); return; }
     const { error } = await sb.from('hydrant_tests').insert({
-      session_id: s.id, hydrant_id: hydrantId, condition, wet_dry: wetDry,
+      session_id: s.id, hydrant_id: hydrantId, condition, wet_dry: document.getElementById('f_wet').checked ? 'wet' : 'dry',
       notes: document.getElementById('f_notes') ? (document.getElementById('f_notes').value || null) : null,
     });
     if(error){ toast('Error: ' + error.message); return; }
@@ -1761,12 +1769,9 @@ async function openEditLogEntryModal(entryId, onSaved){
     `;
   } else if(activityType === 'condition_check'){
     bodyHtml = `
-      <div class="field"><label>Wet / Dry</label>
-        <div class="toggle-group">
-          <button type="button" class="toggle-btn ${row.wet_dry==='dry'?'active good':''}" data-wetdry="dry">Dry</button>
-          <button type="button" class="toggle-btn ${row.wet_dry==='wet'?'active bad':''}" data-wetdry="wet">Wet</button>
-        </div>
-      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;">
+        <input type="checkbox" id="e_wet" style="width:auto;" ${row.wet_dry==='wet'?'checked':''}> Wet? <span class="hint" style="margin:0;">(assumed dry unless checked)</span>
+      </label>
       <div class="field"><label>Condition</label>
         <div class="toggle-group">
           <button type="button" class="toggle-btn ${row.condition==='good'?'active good':''}" data-cond="good">Good</button>
@@ -1788,14 +1793,12 @@ async function openEditLogEntryModal(entryId, onSaved){
         <div class="field"><label>Coef.</label><input type="number" id="e_coeff" value="${row.discharge_coeff??0.9}"></div>
         <div class="field"><label># Outlets</label><input type="number" id="e_outlets" value="${row.num_outlets??1}"></div>
       </div>
-      <div class="row2">
-        <div class="field"><label>Condition</label>
-          <select id="e_condition"><option value="good" ${row.condition==='good'?'selected':''}>Good</option><option value="repair" ${row.condition==='repair'?'selected':''}>Needs Repair</option><option value="oos" ${row.condition==='oos'?'selected':''}>OOS</option></select>
-        </div>
-        <div class="field"><label>Wet/Dry</label>
-          <select id="e_wetdry"><option value="dry" ${row.wet_dry==='dry'?'selected':''}>Dry</option><option value="wet" ${row.wet_dry==='wet'?'selected':''}>Wet</option></select>
-        </div>
+      <div class="field"><label>Condition</label>
+        <select id="e_condition"><option value="good" ${row.condition==='good'?'selected':''}>Good</option><option value="repair" ${row.condition==='repair'?'selected':''}>Needs Repair</option><option value="oos" ${row.condition==='oos'?'selected':''}>OOS</option></select>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0 12px;">
+        <input type="checkbox" id="e_wet" style="width:auto;" ${row.wet_dry==='wet'?'checked':''}> Wet? <span class="hint" style="margin:0;">(assumed dry unless checked)</span>
+      </label>
       <div class="field"><label>Notes</label><textarea id="e_notes">${esc(row.notes||'')}</textarea></div>
     `;
   }
@@ -1841,7 +1844,7 @@ async function openEditLogEntryModal(entryId, onSaved){
   });
 
   let editCleared = row.snow_cleared_status, editFlag = row.snow_condition_flag;
-  let editWetDry = row.wet_dry, editCond = row.condition;
+  let editCond = row.condition;
   overlay.querySelectorAll('[data-cleared]').forEach(btn=>{
     btn.onclick = ()=>{ editCleared = btn.dataset.cleared; overlay.querySelectorAll('[data-cleared]').forEach(b=>{b.classList.toggle('active',b===btn);b.classList.remove('good','bad');}); btn.classList.add(editCleared==='cleared'?'good':'bad'); };
   });
@@ -1849,9 +1852,6 @@ async function openEditLogEntryModal(entryId, onSaved){
     btn.onclick = ()=>{ editFlag = (editFlag===btn.dataset.flag)?null:btn.dataset.flag; overlay.querySelectorAll('[data-flag]').forEach(b=>b.classList.remove('active','bad')); if(editFlag) btn.classList.add('active','bad'); };
   });
   if(activityType === 'condition_check'){
-    overlay.querySelectorAll('[data-wetdry]').forEach(btn=>{
-      btn.onclick = ()=>{ editWetDry = btn.dataset.wetdry; overlay.querySelectorAll('[data-wetdry]').forEach(b=>{b.classList.toggle('active',b===btn);b.classList.remove('good','bad');}); btn.classList.add(editWetDry==='dry'?'good':'bad'); };
-    });
     overlay.querySelectorAll('[data-cond]').forEach(btn=>{
       btn.onclick = ()=>{ editCond = btn.dataset.cond; overlay.querySelectorAll('[data-cond]').forEach(b=>{b.classList.toggle('active',b===btn);b.classList.remove('good','bad');}); btn.classList.add(editCond==='good'?'good':'bad'); };
     });
@@ -1863,7 +1863,7 @@ async function openEditLogEntryModal(entryId, onSaved){
       updatePayload.snow_cleared_status = editCleared;
       updatePayload.snow_condition_flag = editFlag;
     } else if(activityType === 'condition_check'){
-      updatePayload.wet_dry = editWetDry;
+      updatePayload.wet_dry = document.getElementById('e_wet').checked ? 'wet' : 'dry';
       updatePayload.condition = editCond;
     } else {
       const P = parseFloat(document.getElementById('e_pitot').value);
@@ -1888,7 +1888,7 @@ async function openEditLogEntryModal(entryId, onSaved){
         drop_pct: drop!==null ? drop.toFixed(1) : null,
         flow_at_20psi: flow20!==null ? Math.round(flow20) : null,
         condition: document.getElementById('e_condition').value,
-        wet_dry: document.getElementById('e_wetdry').value,
+        wet_dry: document.getElementById('e_wet').checked ? 'wet' : 'dry',
       };
     }
     const { error } = await sb.from('hydrant_tests').update(updatePayload).eq('id', entryId);
@@ -2385,7 +2385,9 @@ async function renderReportsTab(){
         <div class="chip ${reportStatusToggles.has('good')?'active':''}" data-cond="good">Good</div>
         <div class="chip ${reportStatusToggles.has('damaged')?'active':''}" data-cond="damaged">Damaged</div>
         <div class="chip ${reportStatusToggles.has('oos')?'active':''}" data-cond="oos">Out of Service</div>
+        <div class="chip ${reportStatusToggles.has('wet')?'active':''}" data-cond="wet">Wet</div>
       </div>
+      <div class="hint">Wet combines with any status selected above (e.g. Damaged + Wet) rather than replacing it.</div>
     </div>
     <div class="card" id="reportSummary">Loading…</div>
     <div class="card">
@@ -2428,10 +2430,13 @@ async function buildConditionReportRows(){
   let rows = hydrants.map(h => {
     const tests = byHydrant[h.id] || [];
     const statusInfo = computeHydrantStatus(tests);
+    const wetDryTest = tests.find(t => t.wet_dry); // tests are newest-first already
     const lastChecked = tests[0] ? tests[0].tested_at : null;
-    return { hydrant_number: h.hydrant_number, address: h.address || '', status: statusInfo.status, lastChecked };
+    return { hydrant_number: h.hydrant_number, address: h.address || '', status: statusInfo.status, wetDry: wetDryTest ? wetDryTest.wet_dry : null, lastChecked };
   });
-  if(reportStatusToggles.size > 0) rows = rows.filter(r => reportStatusToggles.has(r.status));
+  const statusFilters = [...reportStatusToggles].filter(v => v !== 'wet');
+  if(statusFilters.length > 0) rows = rows.filter(r => statusFilters.includes(r.status));
+  if(reportStatusToggles.has('wet')) rows = rows.filter(r => r.wetDry === 'wet');
   rows.sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
   return rows;
 }
@@ -2443,6 +2448,7 @@ async function loadReportSummary(){
   const good = rows.filter(r=>r.status==='good').length;
   const damaged = rows.filter(r=>r.status==='damaged').length;
   const oos = rows.filter(r=>r.status==='oos').length;
+  const wet = rows.filter(r=>r.wetDry==='wet').length;
   summaryEl.innerHTML = `
     <h3 style="margin-top:0;">Summary</h3>
     <div class="stat-grid">
@@ -2450,6 +2456,7 @@ async function loadReportSummary(){
       <div class="stat"><div class="n">${good}</div><div class="l">Good</div></div>
       <div class="stat"><div class="n overdue">${damaged}</div><div class="l">Damaged</div></div>
       <div class="stat"><div class="n overdue">${oos}</div><div class="l">Out of Service</div></div>
+      <div class="stat" style="grid-column:1/-1;"><div class="n">${wet}</div><div class="l">Wet</div></div>
     </div>
   `;
 }
@@ -2889,6 +2896,12 @@ function renderSettingsTab(){
       </div>
     </div>
     <div class="card">
+      <h3 style="margin-top:0;">Company Emails</h3>
+      <div class="hint" style="margin-bottom:10px;">When a company reports a hydrant, they're CC'd on the notification here as a verifying copy — alongside the fixed recipients above.</div>
+      ${state.companies.map(c => `<div class="field"><label>${esc(c.name)}</label><input type="email" class="companyEmailInput" data-company="${c.id}" value="${esc(c.email||'')}" placeholder="name@email.com"></div>`).join('')}
+      <button class="primary" id="saveCompanyEmailsBtn">Save Company Emails</button>
+    </div>
+    <div class="card">
       <h3 style="margin-top:0;">Company Login Code</h3>
       <div class="hint" style="margin-bottom:10px;">Shared password used by every company to sign in.</div>
       <div class="field"><input type="text" id="sharedCodeInput" value="${esc(sharedCode())}"></div>
@@ -2902,7 +2915,16 @@ function renderSettingsTab(){
       <h3 style="margin-top:0;">Add Company</h3>
       <div class="hint" style="margin-bottom:10px;">Uses the shared company login code above — no separate password needed.</div>
       <div class="field"><label>Name</label><input type="text" id="newCompanyName" placeholder="e.g. EMS 1"></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:10px;">
+        <input type="checkbox" id="newCompanyReportOnly" style="width:auto;"> Report-only login (not a hydrant-testing unit — skips Division/List, goes straight to Home)
+      </label>
       <button class="primary" id="addCompanyBtn">Add Company</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Report-Only Logins</h3>
+      <div class="hint" style="margin-bottom:10px;">These skip Division/List selection entirely and land straight on Home — for units like EMS, Communications, or Fire Prevention that report hydrants but don't test them.</div>
+      ${state.companies.map(c => `<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:6px;"><input type="checkbox" class="reportOnlyFlag" data-company="${c.id}" style="width:auto;" ${c.skip_list_assignment?'checked':''}> ${esc(c.name)}</label>`).join('')}
+      <button class="primary" id="saveReportOnlyBtn">Save Report-Only Logins</button>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Export</h3>
@@ -2919,6 +2941,7 @@ function renderSettingsTab(){
     </div>`;
 
   document.querySelectorAll('#s_retest, #s_coeff, #s_outlet, #s_numoutlets').forEach(el=> el.addEventListener('input', ()=>markDirty('saveSettings')));
+  document.querySelectorAll('.companyEmailInput').forEach(el=> el.addEventListener('input', ()=>markDirty('saveCompanyEmailsBtn')));
   document.getElementById('sharedCodeInput').addEventListener('input', ()=>markDirty('saveSharedCodeBtn'));
 
   document.getElementById('saveSettings').onclick = async ()=>{
@@ -2952,6 +2975,13 @@ function renderSettingsTab(){
       renderSettingsTab();
     };
   });
+  document.getElementById('saveCompanyEmailsBtn').onclick = async ()=>{
+    const updates = Array.from(document.querySelectorAll('.companyEmailInput')).map(input => ({ id: input.dataset.company, email: input.value.trim() || null }));
+    for(const u of updates) await sb.from('companies').update({ email: u.email }).eq('id', u.id);
+    toast('Company emails saved');
+    clearDirty('saveCompanyEmailsBtn');
+    await loadRefData();
+  };
   document.getElementById('saveSharedCodeBtn').onclick = async ()=>{
     await sb.from('app_settings').upsert([{ key:'shared_company_login_code', value: document.getElementById('sharedCodeInput').value }]);
     toast('Login code saved'); clearDirty('saveSharedCodeBtn'); loadRefData();
@@ -2960,9 +2990,17 @@ function renderSettingsTab(){
   document.getElementById('addCompanyBtn').onclick = async ()=>{
     const name = document.getElementById('newCompanyName').value.trim();
     if(!name){ toast('Enter a name'); return; }
-    const { error } = await sb.from('companies').insert({ name, access_code: sharedCode(), is_chief: false });
+    const reportOnly = document.getElementById('newCompanyReportOnly').checked;
+    const { error } = await sb.from('companies').insert({ name, access_code: sharedCode(), is_chief: false, skip_list_assignment: reportOnly });
     if(error){ toast('Error: ' + error.message); return; }
     toast('Company added');
+    await loadRefData();
+    renderSettingsTab();
+  };
+  document.getElementById('saveReportOnlyBtn').onclick = async ()=>{
+    const updates = Array.from(document.querySelectorAll('.reportOnlyFlag')).map(cb => ({ id: cb.dataset.company, skip_list_assignment: cb.checked }));
+    for(const u of updates) await sb.from('companies').update({ skip_list_assignment: u.skip_list_assignment }).eq('id', u.id);
+    toast('Report-only logins saved');
     await loadRefData();
     renderSettingsTab();
   };
