@@ -430,6 +430,7 @@ function renderBlockSelect(){
 // ============================================================
 async function clearLogin(){
   state.company = null; state.division = null; state.block = null; state.superAdmin = null; state.isChief = false;
+  state.tab = 'new';
   localStorage.removeItem('lfd_company'); localStorage.removeItem('lfd_division');
   localStorage.removeItem('lfd_block');
   localStorage.removeItem('lfd_super_admin'); localStorage.removeItem('lfd_active_session_id');
@@ -776,7 +777,9 @@ function renderReportHydrant(backTo){
   input.addEventListener('input', ()=>{
     const q = input.value.trim().toLowerCase();
     if(!q){ results.style.display='none'; results.innerHTML=''; return; }
-    const matches = state.hydrants.filter(h => h.hydrant_number.toLowerCase().includes(q) || (h.address||'').toLowerCase().includes(q)).slice(0, 8);
+    const matches = state.hydrants.filter(h => h.hydrant_number.toLowerCase().includes(q) || (h.address||'').toLowerCase().includes(q))
+      .sort((a,b)=> (a.address||'').localeCompare(b.address||''))
+      .slice(0, 20);
     results.style.display = matches.length ? 'block' : 'none';
     results.innerHTML = matches.map(h => {
       const comp = state.companies.find(c=>c.id===h.company_id)?.name || '—';
@@ -1084,7 +1087,9 @@ function wireHydrantPicker(afterPick){
   input.addEventListener('input', ()=>{
     const q = input.value.trim().toLowerCase();
     if(!q){ results.style.display='none'; results.innerHTML=''; return; }
-    const matches = state.hydrants.filter(h => h.hydrant_number.toLowerCase().includes(q) || (h.address||'').toLowerCase().includes(q)).slice(0, 8);
+    const matches = state.hydrants.filter(h => h.hydrant_number.toLowerCase().includes(q) || (h.address||'').toLowerCase().includes(q))
+      .sort((a,b)=> (a.address||'').localeCompare(b.address||''))
+      .slice(0, 20);
     results.style.display = matches.length ? 'block' : 'none';
     results.innerHTML = matches.map(h => {
       const comp = state.companies.find(c=>c.id===h.company_id)?.name || '—';
