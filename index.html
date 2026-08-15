@@ -1206,6 +1206,24 @@ async function wireDupWarning(hydrantId, activityType){
   }
 }
 
+function openIncompleteFlowTestWarning(missingFields, onProceed){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="card modal-card">
+      <h3 style="margin-top:0;">Incomplete Reading</h3>
+      <div class="hint" style="margin-bottom:14px;">Missing: <b>${esc(missingFields.join(', '))}</b>. A complete flow test needs Static, Residual, and Pitot readings.</div>
+      <button class="primary" id="goBackCompleteBtn">Go Back &amp; Complete</button>
+      <button class="secondary" id="bypassIncompleteBtn" style="border-color:var(--warn);color:var(--warn);">Save Incomplete &amp; Continue</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('goBackCompleteBtn').onclick = ()=> overlay.remove();
+  document.getElementById('bypassIncompleteBtn').onclick = async ()=>{
+    overlay.remove();
+    await onProceed();
+  };
+}
+
 function renderFlowTestForm(main, headerHtml, pending, s, job){
   main.innerHTML = headerHtml + `
     <div class="card">
@@ -1260,9 +1278,8 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
     document.getElementById(id).addEventListener('input', calc);
   });
 
-  document.getElementById('saveBtn').onclick = async ()=>{
+  async function doSaveFlowTest(){
     const hydrantId = selectedHydrantId || document.getElementById('f_hydrant').value;
-    if(!hydrantId){ toast('Select a hydrant'); return; }
     const {flow, drop, flow20} = calc();
     const { error } = await sb.from('hydrant_tests').insert({
       session_id: s.id, hydrant_id: hydrantId,
@@ -1284,6 +1301,20 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
     clearFormDirty();
     toast('Saved — ready for next one');
     renderHydrantEntry();
+  }
+
+  document.getElementById('saveBtn').onclick = async ()=>{
+    const hydrantId = selectedHydrantId || document.getElementById('f_hydrant').value;
+    if(!hydrantId){ toast('Select a hydrant'); return; }
+    const missing = [];
+    if(!document.getElementById('f_static').value) missing.push('Static');
+    if(!document.getElementById('f_residual').value) missing.push('Residual');
+    if(!document.getElementById('f_pitot').value) missing.push('Pitot');
+    if(missing.length){
+      openIncompleteFlowTestWarning(missing, doSaveFlowTest);
+    } else {
+      await doSaveFlowTest();
+    }
   };
 }
 
@@ -1903,6 +1934,7 @@ async function openEditLogEntryModal(entryId, onSaved){
 // STATS — Today/Week/Month, Man-Hours, condensed Overdue + PDF
 // ============================================================
 let lastOverdueList = [];
+let lastIncompleteList = [];
 function companyShorthand(name){
   const m = name.match(/^(Engine|Ladder)\s+(\d+)/i);
   if(m) return m[1][0].toUpperCase() + m[2];
@@ -1959,8 +1991,8 @@ async function renderCompanyPeriodHydrants(companyId, fromIso, toIso, backTo){
 async function renderStats(){
   const main = document.getElementById('main');
   main.innerHTML = 'Loading…';
-  const [{data: tests}, {data: sessions}, {data: hydrants}] = await Promise.all([
-    sb.from('hydrant_tests').select('*'),
+  const [tests, {data: sessions}, {data: hydrants}] = await Promise.all([
+    fetchAllHydrantTestsWithSession(),
     sb.from('sessions').select('*'),
     sb.from('hydrants').select('*').eq('active', true),
   ]);
@@ -2002,6 +2034,32 @@ async function renderStats(){
     overdueByCompany[name] = (overdueByCompany[name]||0)+1;
   });
   const overdueRows = Object.entries(overdueByCompany).sort((a,b)=>compareCompanyNames(a[0],b[0]));
+
+  // Incomplete Inspections — hydrants whose MOST RECENT flow test is
+  // missing a Static/Residual/Pitot reading (t is already sorted
+  // newest-first from fetchAllHydrantTestsWithSession).
+  const latestFlowTestByHydrant = {};
+  t.forEach(x => {
+    if(x.sessions?.activity_type === 'flow_test' && !latestFlowTestByHydrant[x.hydrant_id]){
+      latestFlowTestByHydrant[x.hydrant_id] = x;
+    }
+  });
+  const incompleteHydrantIds = Object.keys(latestFlowTestByHydrant).filter(hid => {
+    const test = latestFlowTestByHydrant[hid];
+    return test.static_psi == null || test.residual_psi == null || test.pitot_psi == null;
+  });
+  const incomplete = h.filter(hy => incompleteHydrantIds.includes(hy.id));
+  lastIncompleteList = [...incomplete].sort((a,b)=>{
+    const an = state.companies.find(c=>c.id===a.company_id)?.name || '';
+    const bn = state.companies.find(c=>c.id===b.company_id)?.name || '';
+    return compareCompanyNames(an, bn);
+  });
+  const incompleteByCompany = {};
+  incomplete.forEach(hy=>{
+    const name = state.companies.find(c=>c.id===hy.company_id)?.name || 'Unassigned';
+    incompleteByCompany[name] = (incompleteByCompany[name]||0)+1;
+  });
+  const incompleteRows = Object.entries(incompleteByCompany).sort((a,b)=>compareCompanyNames(a[0],b[0]));
 
   const hoursByCompany = {};
   const manHoursByCompany = {};
@@ -2049,6 +2107,13 @@ async function renderStats(){
       ${overdueRows.length ? `<table class="report" style="margin-top:8px;"><thead><tr><th>Company</th><th>Outstanding</th></tr></thead><tbody>${overdueRows.map(([name,count])=>`<tr><td>${esc(name)}</td><td>${count}</td></tr>`).join('')}</tbody></table>` : ''}
       ${overdue.length ? '<button class="secondary" id="overduePdfBtn">Download Full List (PDF)</button>' : ''}
     </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Incomplete Inspections</h3>
+      <div class="hint" style="margin-bottom:8px;">Hydrants whose most recent flow test is missing a Static, Residual, or Pitot reading — including any saved with "Save Incomplete."</div>
+      <div style="font-size:20px;font-weight:700;" class="${incomplete.length?'overdue':''}">${incomplete.length} total</div>
+      ${incompleteRows.length ? `<table class="report" style="margin-top:8px;"><thead><tr><th>Company</th><th>Incomplete</th></tr></thead><tbody>${incompleteRows.map(([name,count])=>`<tr><td>${esc(name)}</td><td>${count}</td></tr>`).join('')}</tbody></table>` : '<div class="hint">None right now.</div>'}
+      ${incomplete.length ? '<button class="secondary" id="incompletePdfBtn">Download Full List (PDF)</button>' : ''}
+    </div>
   `;
   document.querySelectorAll('[data-companyperiod]').forEach(chip=>{
     chip.onclick = ()=> renderCompanyPeriodHydrants(chip.dataset.companyperiod, chip.dataset.from, chip.dataset.to, renderStats);
@@ -2062,6 +2127,17 @@ async function renderStats(){
     const body = lastOverdueList.map(hy => [hy.hydrant_number, hy.address||'', state.companies.find(c=>c.id===hy.company_id)?.name || '']);
     doc.autoTable({ head: [['Hydrant','Address','Company']], body, startY: 28, styles:{fontSize:9}, headStyles:{fillColor:[26,26,26]} });
     doc.save('overdue-hydrants-'+new Date().toISOString().slice(0,10)+'.pdf');
+    toast('PDF downloaded');
+  };
+  const incompletePdfBtn = document.getElementById('incompletePdfBtn');
+  if(incompletePdfBtn) incompletePdfBtn.onclick = ()=>{
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(16); doc.text('Incomplete Flow Test Inspections', 14, 16);
+    doc.setFontSize(10); doc.text('Generated ' + fmtDate(new Date()), 14, 23);
+    const body = lastIncompleteList.map(hy => [hy.hydrant_number, hy.address||'', state.companies.find(c=>c.id===hy.company_id)?.name || '']);
+    doc.autoTable({ head: [['Hydrant','Address','Company']], body, startY: 28, styles:{fontSize:9}, headStyles:{fillColor:[26,26,26]} });
+    doc.save('incomplete-inspections-'+new Date().toISOString().slice(0,10)+'.pdf');
     toast('PDF downloaded');
   };
 }
