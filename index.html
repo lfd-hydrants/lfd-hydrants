@@ -334,8 +334,10 @@ function renderCompanyLogin(){
         <div class="field"><label>Password</label><input id="loginPass" name="lfd_field_p9z" type="password" autocomplete="new-password" readonly></div>
         <button class="primary" type="button" id="loginBtn">Sign In</button>
         </form>
+        <button class="secondary" id="loginHelpBtn">Help &amp; How-To</button>
       </div>
     </div>`;
+  document.getElementById('loginHelpBtn').onclick = ()=> renderHelpScreen(renderCompanyLogin);
   ['loginCompany_text','loginPass'].forEach(id=>{
     const el = document.getElementById(id);
     el.addEventListener('focus', ()=> el.removeAttribute('readonly'));
@@ -474,6 +476,144 @@ function backBar(label, id){
   return `<div class="back-bar"><button class="small neutral" id="${id}">← ${esc(label)}</button></div>`;
 }
 
+function helpSection(title, bodyHtml, openByDefault){
+  return `<details ${openByDefault?'open':''} style="margin-bottom:10px;border:1px solid var(--line);border-radius:6px;padding:10px 14px;">
+    <summary style="font-weight:700;cursor:pointer;font-size:14.5px;">${esc(title)}</summary>
+    <div style="margin-top:10px;font-size:14px;line-height:1.5;">${bodyHtml}</div>
+  </details>`;
+}
+
+function renderHelpScreen(backTo){
+  const main = document.getElementById('main') || app;
+  const wrap = document.createElement('div');
+  wrap.id = 'helpOverlay';
+  wrap.style.cssText = 'position:fixed;inset:0;background:var(--paper);z-index:200;overflow-y:auto;';
+
+  let html = `<main style="max-width:760px;margin:0 auto;padding:16px;padding-bottom:60px;">
+    ${backBar('Back', 'helpBackBtn')}
+    <div class="card"><h2 style="margin-top:0;">Help &amp; How-To</h2>
+      <div class="hint">Tap any question below to expand it.</div>
+    </div>`;
+
+  html += helpSection('How do I sign in?', `
+    Type your Company name (e.g. "Engine 1") and enter the shared password.
+    Then pick which <b>Division</b> (Group 1-4) is working — that's just
+    your crew for time-tracking. Finally pick your <b>List</b> (A/B/C/D,
+    or "Complete List" to work the whole company roster at once). Division
+    and List are two different things: Division is <i>who's working today</i>,
+    List is <i>which hydrants are assigned</i> — the captain can assign any
+    Division to any List depending on the day's task.
+  `, true);
+
+  html += helpSection('Starting and working a job', `
+    From Home, tap <b>Start New Job</b>, pick an activity (Flow Test,
+    Condition Check, or Snow Removal), then enter the OIC and crew for
+    this shift. You'll land on the entry screen — pick a hydrant (or tap
+    <b>Accept</b> on the Suggested Next Stop card), fill in the readings,
+    and hit <b>Save &amp; Continue</b>. The job stays open across multiple
+    days/crews until you're truly done with the whole list.
+  `);
+
+  html += helpSection('Ending a shift vs. closing a job', `
+    <b>End Shift</b> just pauses — the job stays open for whoever picks it
+    up next, even a different day. <b>Close Job Permanently</b> is separate,
+    and should only be used once the entire list is actually finished.
+  `);
+
+  html += helpSection('What does "Unable to Test" mean?', `
+    On a Flow Test, if a hydrant genuinely can't be tested (stuck valve,
+    OOS, etc.), check <b>Unable to Test</b> — this skips the missing-reading
+    warning and keeps that hydrant off the Incomplete Inspections list,
+    since it's an accurate report, not an oversight. Selecting <b>OOS</b>
+    auto-checks this for you, but you can always adjust it manually.
+  `);
+
+  html += helpSection('What if I forget to finish a reading?', `
+    If you try to save a Flow Test missing Static/Residual/Pitot, you'll
+    get a warning with two choices: go back and finish it, or deliberately
+    save incomplete and move on. Anything saved incomplete shows up on
+    your company's <b>Incomplete Inspections</b> list on Home — tap one
+    to jump straight back into finishing it.
+  `);
+
+  html += helpSection('Reporting a hydrant on sight', `
+    Use <b>Report Hydrant</b> (on Home, or on the sign-in screen before
+    picking a List) to flag a damaged/broken hydrant you noticed — no job
+    or shift needed. Search the hydrant, mark Damaged or OOS, add notes,
+    and submit — this notifies the right people automatically and shows
+    up on the Master Hydrant List right away.
+  `);
+
+  html += helpSection('What do the hydrant colors mean?', `
+    🟢 Green = Good. 🟡 Yellow = Damaged (but still working). 🔴 Red = Out
+    of Service. A flag <b>sticks</b> once set — even if another company
+    later logs a routine "Good" test on it, it stays flagged until an
+    admin/chief officially clears it with Mark Repaired. This is
+    intentional, so a real problem can't get accidentally buried by
+    routine testing.
+  `);
+
+  html += helpSection('No signal / dead zone in the field', `
+    If your iPad has no signal, an <b>Offline Sheet</b> (a fillable PDF,
+    saved to the device ahead of time — ask your chief) lets you keep
+    working on paper-style entry. Once back online, use <b>Import Offline
+    Sheet</b> on Home to upload the completed PDF — it reads the fields
+    automatically and creates all the entries, no retyping.
+  `);
+
+  if(state.isChief){
+    html += `<div class="card" style="background:#f1efe8;"><h3 style="margin-top:0;">Chief &amp; Admin</h3></div>`;
+
+    html += helpSection('Campaigns', `
+      A citywide umbrella above jobs — auto-created the moment any company
+      starts a job for an activity type, and every other company's matching
+      job joins it automatically. Click into one to see the full
+      department's progress. <b>Create Campaign</b> lets you pre-scope one
+      to specific companies instead of all of them. Editing/closing a
+      campaign is chief-only; a company can still auto-create one just by
+      starting a normal job.
+    `);
+
+    html += helpSection('Reports — the three types', `
+      <b>Campaign Export</b> (inside a campaign's detail page) — everything
+      logged under that specific campaign. <b>Reports tab</b> — a lean
+      "who needs a look" list: pick companies, toggle Good/Damaged/OOS/Wet,
+      export just Hydrant/Address/Date. <b>Master List Snapshot</b> (from
+      the Master Hydrant List screen) — the richest one: status color +
+      latest flow readings, one row per hydrant. All exports are real
+      Excel files now, not plain CSV.
+    `);
+
+    html += helpSection('Mark Repaired', `
+      Only reachable from the Master Hydrant List's hydrant detail view,
+      or from a flagged entry in Log — and only chief/admin logins can do
+      it, enforced by the database itself, not just hidden from the menu.
+      This is meant to reflect Water &amp; Sewer's official confirmation
+      that a hydrant was actually fixed, not just a routine retest.
+    `);
+
+    html += helpSection('Stats', `
+      Today/Week/Month activity, clickable company shorthand (tap E1, L2,
+      etc. to see exactly what they logged), Hours &amp; Man-Hours by
+      company and by open campaign, Overdue for Retest, and Incomplete
+      Inspections — each with a full-list PDF export.
+    `);
+
+    html += helpSection('Settings', `
+      Testing constants (retest interval, discharge coefficient, outlet
+      size), the shared Company Login Code, Report Hydrant email
+      recipients, per-company emails (for the CC on Report Hydrant),
+      Report-Only logins (for EMS/Communications/etc. — skips straight to
+      Home), Add Company, and Offline Sheet generation.
+    `);
+  }
+
+  html += `</main>`;
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap);
+  document.getElementById('helpBackBtn').onclick = ()=>{ wrap.remove(); if(backTo) backTo(); };
+}
+
 // ---- Unsaved-changes warning ----
 let unsavedChanges = false;
 function markFormDirty(){ unsavedChanges = true; }
@@ -519,6 +659,7 @@ function renderCompanyShell(){
     <header>
       <div><h1>LFD Hydrant Testing</h1><div class="who">${esc(state.company.name)}${state.division.name ? ' · ' + esc(state.division.name) : ''} · ${blockLabel(state.block)}</div></div>
       <div style="display:flex;gap:6px;">
+        <button id="helpBtn">?</button>
         <button id="changeBlockBtn">Change List</button>
         <button id="switchBtn">Switch</button>
       </div>
@@ -529,6 +670,7 @@ function renderCompanyShell(){
     </div>
     <main id="main"></main>`;
   document.getElementById('switchBtn').onclick = ()=> guardNavigate(()=>{ clearLogin(); render(); });
+  document.getElementById('helpBtn').onclick = ()=> renderHelpScreen(()=>{ if(state.tab==='log') renderLog(); else routeHomeTab(); });
   document.getElementById('changeBlockBtn').onclick = ()=> guardNavigate(()=>{
     state.block = null; localStorage.removeItem('lfd_block'); render();
   });
@@ -546,7 +688,10 @@ function renderChiefShell(){
   app.innerHTML = `
     <header>
       <div><h1>LFD Hydrant Testing</h1><div class="who">${who}</div></div>
-      <button id="switchBtn">Switch</button>
+      <div style="display:flex;gap:6px;">
+        <button id="helpBtn">?</button>
+        <button id="switchBtn">Switch</button>
+      </div>
     </header>
     <div class="tabs">
       <div class="tab" data-tab="campaigns">Campaigns</div>
@@ -557,6 +702,7 @@ function renderChiefShell(){
     </div>
     <main id="main"></main>`;
   document.getElementById('switchBtn').onclick = ()=> guardNavigate(()=>{ clearLogin(); render(); });
+  document.getElementById('helpBtn').onclick = ()=> renderHelpScreen(()=> renderChiefShell());
   document.querySelectorAll('.tab').forEach(t=>{
     t.classList.toggle('active', t.dataset.tab === state.tab);
     t.onclick = ()=> guardNavigate(()=>{ state.tab = t.dataset.tab; render(); });
