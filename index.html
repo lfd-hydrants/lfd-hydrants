@@ -2513,7 +2513,7 @@ async function renderCampaignDetail(campaignId){
   };
 
   async function getCampaignScopedRows(){
-    const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, block), sessions(activity_type, tested_at)');
+    const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number, address, company_id, block), sessions(activity_type)');
     return (data||[]).filter(r => r.sessions && r.sessions.activity_type === campaign.activity_type && new Date(r.tested_at) >= cutoff
       && (!eligibleCompanyIds || eligibleCompanyIds.has(r.hydrants?.company_id)));
   }
