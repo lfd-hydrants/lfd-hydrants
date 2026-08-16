@@ -564,10 +564,24 @@ async function computeCompletionForCompanyBlock(companyId, block, activityType, 
     : state.hydrants.filter(h => h.company_id === companyId && h.block === block);
   const ids = hydrantsFor.map(h=>h.id);
   if(ids.length === 0) return { pending: [], total: 0, completedCount: 0 };
-  const { data } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, sessions(activity_type)').in('hydrant_id', ids);
-  const doneIds = new Set((data||[])
-    .filter(r => r.sessions && r.sessions.activity_type === activityType && new Date(r.tested_at) >= cutoffDate)
-    .map(r=>r.hydrant_id));
+  const { data } = await sb.from('hydrant_tests').select('hydrant_id, tested_at, static_psi, residual_psi, pitot_psi, unable_to_test, sessions(activity_type)').in('hydrant_id', ids);
+  const doneIds = new Set();
+  (data||[]).forEach(r => {
+    if(!r.sessions || r.sessions.activity_type !== activityType) return;
+    if(new Date(r.tested_at) < cutoffDate) return;
+    if(activityType === 'flow_test'){
+      // A flow test only counts as genuinely finished if it has all
+      // three readings, or the crew explicitly marked it Unable to
+      // Test — an entry saved incomplete (missing readings, no
+      // Unable-to-Test override) does NOT count as done, so the
+      // hydrant correctly stays on the pending list until it's
+      // actually finished.
+      const complete = r.unable_to_test || (r.static_psi != null && r.residual_psi != null && r.pitot_psi != null);
+      if(complete) doneIds.add(r.hydrant_id);
+    } else {
+      doneIds.add(r.hydrant_id);
+    }
+  });
   const pending = hydrantsFor.filter(h => !doneIds.has(h.id));
   return { pending, total: hydrantsFor.length, completedCount: hydrantsFor.length - pending.length };
 }
@@ -578,6 +592,56 @@ async function computeJobPending(job){
 // ============================================================
 // COMPANY HOME
 // ============================================================
+let preselectHydrantId = null;
+
+async function computeCompanyIncompleteInspections(companyId){
+  const companyHydrantIds = new Set(state.hydrants.filter(h=>h.company_id===companyId).map(h=>h.id));
+  const allTests = await fetchAllHydrantTestsWithSession();
+  const latestFlowTestByHydrant = {};
+  allTests.forEach(x => {
+    if(companyHydrantIds.has(x.hydrant_id) && x.sessions?.activity_type === 'flow_test' && !latestFlowTestByHydrant[x.hydrant_id]){
+      latestFlowTestByHydrant[x.hydrant_id] = x;
+    }
+  });
+  const incompleteIds = Object.keys(latestFlowTestByHydrant).filter(hid => {
+    const test = latestFlowTestByHydrant[hid];
+    if(test.unable_to_test) return false;
+    return test.static_psi == null || test.residual_psi == null || test.pitot_psi == null;
+  });
+  return state.hydrants.filter(h=>incompleteIds.includes(h.id))
+    .sort((a,b)=> a.hydrant_number.localeCompare(b.hydrant_number, undefined, {numeric:true}));
+}
+
+// Jumps straight into a Flow Test entry for a specific hydrant, even
+// though it technically already has an entry (just an incomplete
+// one) so it wouldn't normally appear in a job's pending list. Resumes
+// or creates whatever job/shift is needed for that hydrant's own
+// block, matching the normal Start New Job flow, then pre-selects the
+// hydrant once the entry form is up.
+async function goToFlowTestForHydrant(hydrant){
+  state.block = hydrant.block;
+  localStorage.setItem('lfd_block', state.block);
+  preselectHydrantId = hydrant.id;
+
+  const { data: existingJob } = await sb.from('jobs').select('*')
+    .eq('company_id', state.company.id).eq('block', state.block)
+    .eq('activity_type', 'flow_test').eq('status','open').maybeSingle();
+
+  if(existingJob){
+    const { data: openShift } = await sb.from('sessions').select('*').eq('job_id', existingJob.id).eq('status','open').maybeSingle();
+    state.activeJob = existingJob;
+    if(openShift){
+      state.activeSession = openShift;
+      localStorage.setItem('lfd_active_session_id', openShift.id);
+      renderHydrantEntry();
+    } else {
+      offerSameDayCrewResume(existingJob);
+    }
+  } else {
+    renderStartShift({ activityType: 'flow_test' }, null);
+  }
+}
+
 async function renderCompanyHome(){
   const main = document.getElementById('main');
   main.innerHTML = '<div class="card">Loading…</div>';
@@ -597,6 +661,8 @@ async function renderCompanyHome(){
     jobRows.push({ job, openShift, recentClosedShifts, pendingCount: pending.length, total });
   }
 
+  const incompleteHydrants = await computeCompanyIncompleteInspections(state.company.id);
+
   main.innerHTML = `
     <div class="card">
       <h3 style="margin-top:0;">Open Work</h3>
@@ -613,6 +679,17 @@ async function renderCompanyHome(){
         </div>
       `).join('')}
     </div>
+    ${incompleteHydrants.length ? `
+    <div class="card">
+      <h3 style="margin-top:0;">Incomplete Inspections</h3>
+      <div class="hint" style="margin-bottom:10px;">Missing a Static/Residual/Pitot reading — tap one to finish it.</div>
+      ${incompleteHydrants.map(h => `
+        <div class="status-row" data-incomplete="${h.id}">
+          <span>${esc(h.hydrant_number)} — ${esc(h.address||'')} <span class="hint" style="display:inline;">(List ${esc(h.block)})</span></span>
+          <span class="status-badge damaged">! Incomplete</span>
+        </div>
+      `).join('')}
+    </div>` : ''}
     <div class="card">
       <button class="primary" id="startNewBtn">Start New Job</button>
       <button class="secondary" id="checklistBtn">Master Hydrant List</button>
@@ -636,6 +713,12 @@ async function renderCompanyHome(){
   document.getElementById('checklistBtn').onclick = ()=> renderMasterHydrantList({ backTo: renderCompanyHome, isChief:false });
   document.getElementById('reportHydrantBtn').onclick = ()=> renderReportHydrant();
   document.getElementById('importOfflineBtn').onclick = ()=> renderImportOfflineSheet();
+  main.querySelectorAll('[data-incomplete]').forEach(row=>{
+    row.onclick = ()=>{
+      const h = state.hydrants.find(x=>x.id===row.dataset.incomplete);
+      if(h) goToFlowTestForHydrant(h);
+    };
+  });
 
   main.querySelectorAll('[data-resume]').forEach(btn=>{
     btn.onclick = async ()=>{
@@ -1267,6 +1350,18 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
   document.getElementById('f_hydrant').addEventListener('change', (e)=>{ selectedHydrantId = e.target.value; updateLocationNotesDisplay(selectedHydrantId); wireDupWarning(selectedHydrantId, 'flow_test'); });
   wireHydrantPicker((id)=> wireDupWarning(id, 'flow_test'));
   wireSuggestedNextStop(pending);
+  if(preselectHydrantId){
+    const target = state.hydrants.find(h=>h.id===preselectHydrantId);
+    if(target){
+      selectedHydrantId = preselectHydrantId;
+      const manualSearch = document.getElementById('manualSearch');
+      if(manualSearch) manualSearch.value = target.hydrant_number;
+      updateLocationNotesDisplay(selectedHydrantId);
+      wireDupWarning(selectedHydrantId, 'flow_test');
+      toast('Continue the incomplete reading for ' + target.hydrant_number);
+    }
+    preselectHydrantId = null;
+  }
   clearFormDirty();
   wireDirtyTracking(main);
 
@@ -2038,6 +2133,14 @@ async function renderStats(){
 
   const lastTestByHydrant = {};
   t.forEach(x => {
+    // Same rule as job completion: an incomplete flow test (missing a
+    // reading, not marked Unable to Test) doesn't count as a genuine
+    // retest — the hydrant should still show as overdue rather than
+    // having its clock quietly reset by an unfinished attempt.
+    if(x.sessions?.activity_type === 'flow_test'){
+      const complete = x.unable_to_test || (x.static_psi != null && x.residual_psi != null && x.pitot_psi != null);
+      if(!complete) return;
+    }
     const cur = lastTestByHydrant[x.hydrant_id];
     if(!cur || new Date(x.tested_at) > new Date(cur)) lastTestByHydrant[x.hydrant_id] = x.tested_at;
   });
