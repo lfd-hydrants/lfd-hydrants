@@ -10,140 +10,46 @@ A digital replacement for the paper hydrant-testing spreadsheet. Crews log flow
 tests, condition checks, and snow removal in the field; the chief gets live
 visibility, stats, and exportable reports/backups.
 
-## Current status (as of this build)
+## Current status
 
-- ✅ Database schema created (`sql/001_initial_schema.sql`)
-- ✅ Sample/placeholder data for testing (`sql/002_seed_sample_data.sql`)
-- ✅ Session timing model updated to real timestamps (`sql/003_session_start_end_timestamps.sql`)
-- ✅ Jobs vs. shifts model added (`sql/004_jobs_multi_day_tracking.sql`)
-- ✅ Real-fleet test data — 12 companies, 4 divisions, 50 members, 80 hydrants (`sql/005_real_fleet_test_data.sql`)
-- ✅ Company login + job integrity (`sql/006_company_login_and_job_integrity.sql`) —
-  adds `access_code` to companies, `snow_status` to hydrant_tests
-- ✅ Hydrant division assignment (`sql/007_hydrant_division_assignment.sql`) —
-  **correction**: hydrants belong to a permanent Company + Division pair (a
-  portion of a company's list is permanently assigned to each of the 4
-  groups), not just a company. Jobs are scoped by Company + Division +
-  Activity again to match this. The original cross-division concern is
-  instead solved by making "done" checking **global** — a hydrant is
-  marked complete for its OWNING division's job the moment anyone logs a
-  test against it (e.g. via the manual "search all hydrants" field),
-  regardless of which company/division/crew actually recorded it.
-- ✅ Campaigns + admin tiers (`sql/008_campaigns_and_admin_tiers.sql`):
-  - **Campaigns** — an umbrella above jobs. Auto-created the moment the
-    first company/division starts a job for an activity type (named
-    e.g. "Flow Test — started March 2026"), and every other
-    company/division's job for that same activity automatically joins
-    it while it's open. No manual setup required, though a chief can
-    rename or manually pre-create one from the Campaigns tab.
-  - **Chief-level companies** (`companies.is_chief`) — C1 (Chief of
-    Department), C2 (Deputy Chief), and C4 (District Chief) are seeded
-    as chief-level. Logging in as one skips the normal company
-    hydrant-testing flow entirely and goes to a cross-company chief
-    dashboard.
-  - **Personal admin login** (`super_admins` table) — a login not tied
-    to any company, for troubleshooting. Default seeded account:
-    username `admin`, password `changeme2026` — **change this
-    immediately** from Settings → Personal Admin Login once deployed.
-  - **Snow Removal status split** — `snow_cleared_status`
-    (cleared/not_cleared) and `snow_condition_flag` (damaged/oos) are
-    now independent, so a hydrant can be marked Cleared AND Damaged at
-    the same time. The old single `snow_status` column from migration
-    006 is no longer written to (harmless, unused).
-- ✅ **Major app update** (`app/index.html`):
-  - **Chief dashboard** (Campaigns / Reports / Log / Stats / Settings
-    tabs) for chief-level and personal admin logins. Regular company
-    logins only see Home / Log — Stats and Admin/Settings are no
-    longer visible to them.
-  - **Campaigns tab** — browse open/closed campaigns, click into one
-    for a district-wide rollup: overall % complete, a sortable-by-read
-    table of every company/division's progress, hydrants tested in
-    the last 7 days, rename, close/reopen.
-  - **Reports tab** — company + division sub-tabs, a sortable table
-    (click any column header) of every hydrant with its latest test
-    data (condition, wet/dry, flow, static/residual, last tested), a
-    "flagged only" toggle, and a **Custom CSV Export** card — filter
-    by date range, company, division, activity type, wet/dry, and
-    status/condition, export everything matching with all columns.
-  - **Searchable OIC/crew pickers** on Start Shift / Shift Settings —
-    type a few letters to filter instead of scrolling a long dropdown.
-  - **"Edit Shift" renamed to "Shift Settings"**, and its button is now
-    visually distinct (neutral styling) from the red "End Shift"
-    button next to it.
-  - **Hydrant picker** now offers both a browsable dropdown (all
-    hydrants, with company/division shown) and a search box, in
-    addition to the normal pending-list dropdown. Company/division
-    context only shows on the manual picker, not the regular list.
-  - **Snow Removal screen**: Cleared/Not Cleared is one toggle pair;
-    Damaged/OOS is a separate, independent flag that can be combined
-    with either — notes appear if Not Cleared or a flag is set.
-- ✅ **Major rebuild of `app/index.html`**:
-  - **Login is now company-based**, not individual accounts — pick a
-    Company, enter its shared password, then pick which Division is
-    working today. Under the hood this uses Supabase's anonymous auth
-    (so Row Level Security still works) plus an app-level password
-    check against `companies.access_code` — there's no per-person
-    Supabase Auth account anymore.
-  - **Jobs are scoped to Company + Division + Activity**, matching how
-    hydrants are actually permanently assigned. Two open jobs can't exist
-    for the same company+division+activity at once (enforced at the
-    database level) — the original "wrong division's list" concern is
-    solved by checking done-ness globally (by hydrant + activity type,
-    not by which job recorded it), so a hydrant tested by the wrong
-    crew still correctly clears off its real owning division's list.
-  - **Company Home screen**: shows all open jobs for the logged-in
-    company (Resume / End Shift / Close Job Permanently), a "recently
-    closed, tap to reopen" section (14-day window) for jobs closed by
-    mistake, a "recently ended, tap to reopen" list per job for shifts
-    ended by mistake, a Start New Job flow, and the District Hydrant
-    Checklist.
-  - **End Shift vs. Close Job Permanently** are now distinct: End Shift
-    saves/pauses and keeps the job open for the next crew (any day);
-    Close Job Permanently is separate and intended for when the whole
-    list is done.
-  - **Activity-specific entry screens**: Flow Test keeps the full form
-    (defaults: outlet size 2.5, Wet/Dry defaults to Dry); Condition
-    Check is simplified to a Wet/Dry toggle + Good/Repair/OOS buttons
-    with notes only appearing if Repair or OOS is picked; Snow Removal
-    is simplified to Cleared/Not Cleared/Damaged/OOS buttons with notes
-    only appearing if Not Cleared or Damaged is picked.
-  - **Manual "search all hydrants"** field on every entry screen, so a
-    hydrant can be logged even if it's not on the current job's own
-    company list — since pending/done status is computed by matching
-    hydrant + activity type (not restricted to the recording company),
-    this correctly marks it done wherever it actually belongs.
-  - **Edit Shift** now allows changing Division, OIC, crew, and date.
-    Company and Activity are intentionally NOT editable post-start,
-    since those define which job the shift belongs to — this is a
-    consequence of the company+activity job-scoping fix above, and
-    starting a new job from Company Home is the correct path if the
-    activity was picked wrong.
-  - **District Hydrant Checklist**: full ordered hydrant list with a
-    checkmark per hydrant for the selected activity type, for visual
-    route planning.
-  - Admin tab now includes an editable **Company Login Codes** section.
-  - Log, Stats, and CSV export updated to handle Condition Check and
-    Snow Removal entries alongside Flow Test.
-- ✅ Deployed live at `https://lfd-hydrants.vercel.app` (auto-redeploys on GitHub push)
-- ⏳ Real hydrant / member / company CSVs — not loaded yet (using sample data)
-- ⏳ ISO/state fire marshal format — pending chief's input
-- ⏳ Photos — not built yet
-- ⏳ Auto-emailed backups — not built yet
-- ⏳ Scheduled ping (keep Supabase awake) — not built yet
-- ⏳ QR codes, map view — not built yet
-- ✅ Deployed live at `https://lfd-hydrants.vercel.app` (auto-redeploys on GitHub push)
-- ⏳ **Role-based permissions are UI-only, not database-enforced** — every
-  "chief-only" feature (Status tab repairs, Settings, editing campaigns,
-  Company Login Code, everything) is only hidden from regular company
-  logins by which buttons the app chooses to render. The database itself
-  (Supabase RLS) treats every signed-in session as equally trusted, since
-  login runs through one shared anonymous connection rather than real
-  individual accounts — see "Security note on the company-login model"
-  below. Anyone with basic browser dev-tools knowledge could bypass the
-  UI and read/write anything directly. This is a bigger gap than when
-  this note was first written, since there's now meaningfully more
-  chief-only surface area than there used to be. **Worth fixing before
-  handing this to the full department**, not just before "real rollout"
-  in the abstract.
+- ✅ **Real data loaded**: 1,856 real hydrants (from the department's
+  actual master flow-test spreadsheet), 176 real members, and the real
+  company fleet (Engine 1/3/5/7/9/10, Ladder 1/2/4). No sample/
+  placeholder data remains in active use.
+- ✅ **Real database-enforced access control**: real Supabase Auth
+  accounts for the shared Admin login and the hidden deeper-tier login,
+  with actual RLS policies restricting admin-only actions (Settings,
+  campaign editing, company management, Mark Repaired specifically) —
+  not just hidden buttons. See "Security note" below for the full
+  picture, including what's deliberately still left open.
+- ✅ Deployed live at `https://lfd-hydrants.vercel.app` (auto-redeploys
+  on GitHub push)
+- ✅ Companies belong to a permanent **List** (A–D, called `block` in
+  the schema), independent of the operational **Division** (Group 1-4,
+  which is just crew/shift identity). Jobs are scoped by Company + List
+  + Activity.
+- ✅ Sticky hydrant status (Good/Damaged/OOS), Incomplete Inspections
+  tracking, offline fillable sheets with auto-import, Report Hydrant
+  with email notification, and a full reporting suite (Campaigns,
+  lean condition Reports, Master List Snapshot) — see Build History
+  below for the full list of what exists.
+- ⏳ **ISO/state fire marshal export format** — pending the chief's
+  input on the exact format needed; holding this for its own dedicated
+  session rather than guessing at it.
+- ⏳ **Photos** — not built.
+- ⏳ **Auto-emailed backups** — not built; only the manual "Download
+  Full Backup" button in Settings exists today.
+- ⏳ **Scheduled ping to prevent Supabase's 7-day auto-pause** — not
+  built. May become moot with real daily usage, but worth keeping in
+  mind during any quiet stretch (holidays, etc.).
+- ⏳ **QR codes / map view** — not built.
+- ⏳ **GPS-based nearest-hydrant route ordering** — parked, pending
+  hydrant coordinate data (worth checking whether Water & Sewer/GIS
+  already has this before building it from scratch).
+- ⏳ **First Due export compatibility** — parked, pending their import
+  format.
+- ⏳ **Wipe Training Data script** — ready to write whenever a training
+  date is set; not needed until then.
 
 ## Build history
 
@@ -741,132 +647,170 @@ that must also be uploaded to the repo root (same folder as `index.html`):
 
 ## Architecture
 
-- **Database**: Supabase (Postgres) — see `sql/001_initial_schema.sql` for the full structure
-- **App**: a single static HTML file (`app/index.html`) using the Supabase JS
-  client directly from a CDN — no build step, no framework. Simple on purpose:
-  easy for a future developer to read top-to-bottom.
-- **Auth**: Supabase Auth (email/password). Every crew member needs their own
-  login. RLS (row-level security) currently allows any authenticated user full
-  access — this is intentionally loose for early testing and MUST be tightened
-  before real deployment (see "Next steps").
+- **Database**: Supabase (Postgres) — see `sql/001_initial_schema.sql` for
+  the base structure; each numbered migration in `sql/` builds on it.
+- **App**: a single static HTML file (`app/index.html`) using the Supabase
+  JS client directly from a CDN — no build step, no framework. Simple on
+  purpose: easy to read top-to-bottom.
+- **Auth model**: two tiers, by design, not per-person accounts —
+  - **Companies** share one login code (Settings → Company Login Code)
+    over Supabase's anonymous auth. This is intentionally open —
+    companies can read/write any hydrant citywide, not just their own —
+    since that's how the department actually works, not an oversight.
+  - **Admin/hidden logins** are real individual Supabase Auth accounts,
+    with actual RLS policies restricting admin-only actions. See
+    "Security note" below for exactly what is and isn't enforced.
 
 ## SQL file naming convention
 
-Every SQL migration file follows `00N_short-description.sql` — the number
+Every SQL migration file follows `0NN_short-description.sql` — the number
 preserves run order (each one may depend on earlier ones), the description
-says what it does at a glance. Next ones in line will likely be something like
-`003_add_photo_storage.sql`, `004_tighten_rls_admin_roles.sql`, etc.
+says what it does at a glance. Always run them in order; check the top
+comment of each file for anything that needs manual follow-up (a few
+require a step in the Supabase Dashboard, not just SQL Editor).
 
-## ⚠️ Before real rollout — change the default admin password
+## Resetting the Admin or hidden-tier password
 
-Migration 008 seeds a personal admin login with username `admin` and
-password `changeme2026`. This account can see and edit everything.
+Both are real Supabase Auth accounts now (not the old `super_admins`
+table, which is retired/unused — see Database structure below). To reset
+either password:
 
-Login for this account is now intentionally invisible in the UI — there's
-no "Admin Login" button anymore. Typing `admin` into the Company field
-(instead of a real company name) and the matching password signs in as
-this account instead. Since the Settings tab's password-editing UI for
-this account was also removed (by request, to keep it fully hidden), the
-only way to change this password now is directly in Supabase:
+1. Supabase Dashboard → **Authentication → Users**
+2. Find the account by its email (check `privileged_logins` in SQL
+   Editor if you don't remember which email maps to which username:
+   `select * from privileged_logins;`)
+3. Set a new password directly on that account in the Dashboard — don't
+   rely on the "send reset email" option unless the account's email is
+   real and deliverable (a fake/placeholder email will silently fail to
+   deliver anything)
+4. If you ever change which Supabase Auth account backs a username
+   (e.g. creating a fresh account because the old one's email wasn't
+   real), update `privileged_logins.auth_email` to match, and swap the
+   corresponding row in `privileged_users` to the new account's User ID
+   — both tables need to agree, or login will silently fail with
+   "Incorrect login" even with the right password.
 
-```sql
-update super_admins set access_code = 'your-new-password' where username = 'admin';
-```
+## Security note on the login model
 
-Do this from the SQL Editor as soon as the deploy is confirmed working.
-
-## Security note on the company-login model
-
-Since login is now a shared password per company (not individual Supabase
-Auth accounts), the underlying database access uses Supabase's **anonymous
-auth** — every visitor becomes an "authenticated" (anonymous) Supabase user
-automatically, and the actual company gate is enforced only at the app
-level (checking the entered password against `companies.access_code`).
-
-Practical implications:
-- Row Level Security policies currently allow any authenticated (including
-  anonymous) user full read/write access to everything — this was already
-  true before this change, so nothing got LESS secure, but it's worth
-  knowing the company password is a light gate, not a hard security
-  boundary. Anyone with the site URL and a bit of browser dev-tools
-  knowledge could bypass the password screen and hit the database directly.
-- This is a reasonable trade-off for an internal department tool with no
-  sensitive personal data, but if that ever changes, real per-company (or
-  per-person) Supabase Auth accounts with RLS scoped by company would be
-  the next step up in security.
+- **Companies**: a shared password, checked at the app level against
+  `app_settings`, over one shared anonymous Supabase session. This is a
+  light gate, not a hard boundary — anyone with the site URL and basic
+  browser dev-tools knowledge could technically bypass it and read/write
+  hydrant data directly. **This is intentional, not a gap** — companies
+  are supposed to have full citywide access, so there's nothing to
+  "protect" here that isn't already meant to be open to every company.
+- **Admin-only actions ARE genuinely database-enforced** (as of the
+  access-control rebuild) — real Supabase Auth accounts for the shared
+  Admin login and the hidden deeper tier, with RLS policies that
+  actually check who's signed in, not just which buttons the app shows.
+  Locked down this way: Settings (including the Company Login Code
+  itself), campaign editing/closing (not creation — that's a normal
+  company action), company management, and specifically the Mark
+  Repaired action (identified by its exact signature — a `condition:
+  'good'` entry with no `session_id` — everything else stays exactly as
+  open as before, including a company logging Damaged/OOS through
+  completely normal means).
+- **What's still not covered**: this is a reasonable, deliberately-scoped
+  security model for an internal department tool, not an exhaustive
+  lockdown. If requirements ever change (e.g. genuinely sensitive data
+  enters the system, or per-company data isolation becomes necessary),
+  that would need real per-company Supabase Auth accounts with RLS
+  scoped by company — a bigger step up from what exists today.
 
 ## Database structure (plain-English)
 
-- `companies` — the fleet (Engine 1/3/5/7/9/10, Ladder 1/2/4, plus
-  chief-level entries C1/C2/C4). Has `access_code` (used only for
-  chief-level logins — regular companies share one code from
-  `app_settings`) and `is_chief`.
+- `companies` — the real fleet (Engine 1/3/5/7/9/10, Ladder 1/2/4, plus
+  any report-only units like EMS/Communications). Has `email` (for the
+  Report Hydrant CC), `skip_list_assignment` (report-only logins that
+  skip Division/List and land straight on Home), and legacy
+  `access_code`/`is_chief` columns that are no longer used for login —
+  chief access now goes entirely through the accounts below.
 - `divisions` — the 4 operational crew groups (Group 1-4), purely for
   shift/time tracking. Not tied to hydrant assignment.
-- `members` — the roster (not tied to a company).
+- `members` — the real 176-member roster (not tied to a company).
 - `hydrants` — the real roster (1,856 rows). `company_id` + `block`
   (A/B/C/D) is the permanent assignment; `block` is what the app calls
-  "List" in the UI.
-- `jobs` — the ongoing task for one Company + Block + Activity. Can
-  span many days/shifts. Optionally belongs to a `campaign_id`.
+  "List" in the UI. Also has `location_notes` (editable inline from the
+  entry screen).
+- `jobs` — the ongoing task for one Company + Block + Activity (`block`
+  can also be `'ALL'` for a "Complete List" job spanning every block).
+  Can span many days/shifts. Optionally belongs to a `campaign_id`.
 - `sessions` — one shift: date, OIC, division (Group), crew, total
   minutes, linked to a `job_id`.
 - `hydrant_tests` — one row per logged entry (test, condition check,
-  snow status, or a chief's status update), linked to a hydrant and
-  optionally a session (null `session_id` for chief-issued status
-  changes not tied to a shift).
+  snow status, a chief's status update, or a standalone Report Hydrant
+  entry), linked to a hydrant and optionally a session (null
+  `session_id` for entries not tied to a shift — chief status changes
+  and Report Hydrant both work this way). Also has `gauge_flow_gpm`
+  (optional, informational only), `reported_by_company_id` (for Report
+  Hydrant entries), and `unable_to_test` (explicit "couldn't test this"
+  flag, distinct from an entry that's just missing data).
 - `campaigns` — the citywide umbrella above jobs, optionally scoped to
   specific companies via `company_ids`.
-- `super_admins` — the hidden personal admin login(s).
+- `privileged_users` — maps a real Supabase Auth user ID to admin
+  privileges. Fully locked by RLS — no client-side access at all, only
+  reachable via SQL Editor or the internal `is_privileged()` function.
+- `privileged_logins` — maps a typed username (Admin, the hidden tier)
+  to the real Supabase Auth email behind it. Readable by anyone (just
+  email addresses, not secrets) but which usernames exist here never
+  appears in the app's source code.
+- `super_admins` — **retired, unused.** The old hidden-admin mechanism
+  before the real-auth rebuild. Left in place rather than dropped since
+  deleting it serves no purpose; safe to `drop table if exists
+  super_admins;` anytime if you want it gone.
 - `app_settings` — key/value store (retest interval, discharge
-  coefficient default, shared company login code, etc.).
+  coefficient, outlet size/# outlets, shared company login code, Report
+  Hydrant email recipients, etc.).
 
 ## How to test this right now
 
 1. Open Supabase → your project → **SQL Editor**
-2. Run `sql/001_initial_schema.sql` through `sql/011_real_hydrant_import.sql`
-   in order, if you haven't already. **`011` wipes any test data logged so
-   far and loads the real 1,856-hydrant roster** — read its warning comment
-   before running.
+2. Run every file in `sql/` in numeric order, if you haven't already —
+   check each file's top comment for anything needing manual follow-up
+   in the Supabase Dashboard (a few do, notably `015_access_control.sql`).
 3. Visit the live site: `https://lfd-hydrants.vercel.app`
 4. **Test a regular company**: sign in with a Company name (e.g. "Engine 1")
-   and the shared password (Settings → Company Login Code, defaults to
-   `lfd2026` until changed). Pick a Division (Group), then pick a **List**
-   (A/B/C/D) when prompted. Start New Job, log a couple of hydrants, End
-   Shift. Confirm only Home and Log tabs are visible.
-5. **Test "Change List"**: from Company Home, click Change List and confirm
-   it swaps to a different list's hydrants without a full re-login.
-6. **Test chief access**: sign in as "C1", "C2", or "C4" (their own
-   individual password, set in Settings → Chief Login Codes) — this skips
-   Division/List entirely and goes to the Campaigns/Status/Reports/Log/
-   Stats/Settings dashboard.
-7. **Test the personal admin login**: on the login screen, type `admin` as
-   the Company (this is intentionally not a visible button — see the
-   security note above) with its password. **Change this password
-   immediately** via SQL Editor — there's no in-app UI for it by design.
-8. **Test campaigns**: after step 4's job was started, go to the chief
-   dashboard's Campaigns tab — a campaign should already exist automatically.
-   Start a job under a different company/list for the same activity and
-   confirm it joins the same campaign.
-9. **Test Reports**: try the company/activity chip filters, "flagged only",
-   and the Custom CSV/PDF Export with a few filters.
-10. **Test the Master Hydrant List and Status tab**: confirm hydrants show
-    real addresses from the import, color-coded correctly, and that a
-    flagged one can be marked repaired from the Status tab (chief-only).
+   and the shared password (Settings → Company Login Code). Pick a
+   Division (Group), then pick a **List** (A/B/C/D, or Complete List)
+   when prompted. Start New Job, log a couple of hydrants, End Shift.
+   Confirm only Home and Log tabs are visible.
+5. **Test "Change List"** from Company Home, and confirm **All Hydrants**
+   / **Report Hydrant** both work from the List-select screen without
+   needing a List chosen first.
+6. **Test the Admin login**: type `admin` as the Company, with its
+   password — reaches the chief dashboard (Campaigns/Reports/Log/
+   Stats/Settings). There's also a hidden deeper-tier login, same
+   mechanism, different (undocumented-by-design) username.
+7. **Test campaigns**: after step 4's job was started, go to the chief
+   dashboard's Campaigns tab — a campaign should already exist
+   automatically. Start a job under a different company/list for the
+   same activity and confirm it joins the same campaign.
+8. **Test the Master Hydrant List**: confirm hydrants show real
+   addresses, color-coded status, sortable/filterable, and that a
+   flagged one can be marked repaired from there (chief-only).
+9. **Test Incomplete Inspections**: save a Flow Test missing a reading,
+   confirm the warning fires with a "Save Incomplete" bypass, and that
+   it shows up on both the chief Stats page and the company's own Home
+   screen — clicking it from Home should jump straight into finishing it.
+10. **Test the three report types** — Campaign Detail's export, the lean
+    Reports tab (company add/remove + condition toggles), and the
+    Master List Snapshot — and confirm each produces what it's supposed
+    to (they're deliberately different in shape, not redundant).
 
 ## Next steps (in rough order)
 
-1. Load real hydrant / member / company CSVs (replace sample data)
-2. Get chief's input: retest interval, formula constants, ISO format, admin list
-3. Tighten RLS policies — separate "admin" permissions (edit roster/settings)
-   from "field user" permissions (add tests/events only)
-4. Deploy the app to a real hosting URL (Vercel, free tier) so it's a proper
-   link instead of a local file
-5. Set up the scheduled ping (GitHub Actions) to keep Supabase from pausing
-6. Add photo upload (Supabase Storage)
-7. Add auto-emailed backups
-8. Build the formatted report for Water & Sewer
-9. QR codes / map view (lower priority, nice-to-have)
+1. Set a training date, then run a Wipe Training Data script beforehand
+   (not yet written — trivial once a date exists)
+2. Get chief's input on the ISO/state fire marshal export format
+3. Add photo upload (Supabase Storage)
+4. Add auto-emailed backups
+5. Set up the scheduled ping (GitHub Actions) to keep Supabase from
+   pausing on quiet stretches
+6. QR codes / map view (lower priority, nice-to-have)
+7. If/when GIS coordinate data becomes available: GPS-based
+   nearest-hydrant route ordering
+8. If First Due's import format is ever obtained: shape the CSV export
+   to match it directly
 
 ## Formula currently used (placeholder — confirm with chief)
 
