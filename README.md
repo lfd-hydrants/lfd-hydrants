@@ -147,6 +147,26 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
+### "Unable to Test" (this session) — requires migration 020
+
+- **`sql/020_unable_to_test.sql`** — adds `unable_to_test` to
+  `hydrant_tests`.
+- **Flow Test gets an explicit "Unable to Test" checkbox**, since
+  Condition alone isn't a reliable signal for whether testing was
+  actually possible — OOS usually means untestable, but "Needs Repair"
+  often doesn't (a leak or missing cap usually doesn't stop a valid
+  test). When checked: the missing-reading warning is skipped
+  entirely, and the entry is excluded from Stats' Incomplete
+  Inspections list — because it's not an oversight, it's an accurate
+  report that testing wasn't possible.
+  - Selecting **OOS** auto-checks it as a sensible default (OOS
+    structurally means the hydrant can't deliver water), but it stays
+    fully editable — a crew can uncheck it if they got a reading
+    anyway, or check it manually for a "Needs Repair" hydrant where
+    testing genuinely wasn't possible.
+  - Also editable from the Log's edit modal for Flow Test entries, for
+    consistency.
+
 ### Incomplete inspection warning + tracking list (this session) — no new SQL
 
 - **Flow Test now validates before saving**: if Static, Residual, or
