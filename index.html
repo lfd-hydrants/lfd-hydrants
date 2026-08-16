@@ -206,16 +206,10 @@ async function init(){
     const { error } = await sb.auth.signInAnonymously();
     if(error){ app.innerHTML = '<div class="login-wrap"><div class="card">Connection error: '+esc(error.message)+'</div></div>'; return; }
   }
-  try{
-    const savedCompany = localStorage.getItem('lfd_company');
-    const savedDivision = localStorage.getItem('lfd_division');
-    const savedBlock = localStorage.getItem('lfd_block');
-    const savedSuper = localStorage.getItem('lfd_super_admin');
-    if(savedSuper) state.superAdmin = JSON.parse(savedSuper);
-    else if(savedCompany) state.company = JSON.parse(savedCompany);
-    if(savedDivision) state.division = JSON.parse(savedDivision);
-    if(savedBlock) state.block = savedBlock;
-  }catch(e){}
+  // Deliberately NOT restoring a previous login from localStorage —
+  // every page load starts fresh at the login screen. This also
+  // avoids a stale/deleted company (like the retired C1/C2/C4 logins)
+  // ever silently resurfacing from an old cached session.
   await loadRefData();
   if(!showingPasswordRecovery) render();
 }
@@ -980,9 +974,11 @@ function renderStartShift(prefill, editingSession){
   };
 
   document.getElementById('startBtn').onclick = async ()=>{
+    const btn = document.getElementById('startBtn');
     const oic = document.getElementById('f_oic_value').value;
     const divisionId = document.getElementById('f_division').value;
     if(!oic){ toast('Select an OIC'); return; }
+    btn.disabled = true;
 
     const payload = {
       session_date: document.getElementById('f_date').value,
@@ -993,7 +989,7 @@ function renderStartShift(prefill, editingSession){
 
     if(isEdit){
       const { data, error } = await sb.from('sessions').update(payload).eq('id', editingSession.id).select().single();
-      if(error){ toast('Error: ' + error.message); return; }
+      if(error){ toast('Error: ' + error.message); btn.disabled = false; return; }
       clearFormDirty();
       state.activeSession = data;
       toast('Shift updated');
@@ -1007,14 +1003,28 @@ function renderStartShift(prefill, editingSession){
           activity_type: prefill.activityType, status: 'open',
           campaign_id: campaign ? campaign.id : null,
         }).select().single();
-        if(jobErr){ toast('Error: ' + jobErr.message); return; }
-        job = newJob;
+        if(jobErr){
+          if(jobErr.code === '23505'){
+            // Someone (this device double-tapping, or another device at
+            // nearly the same moment) already created this exact job.
+            // Recover gracefully instead of dead-ending on an error.
+            const { data: existingJob } = await sb.from('jobs').select('*')
+              .eq('company_id', state.company.id).eq('block', state.block)
+              .eq('activity_type', prefill.activityType).eq('status','open').maybeSingle();
+            if(existingJob){ job = existingJob; }
+            else { toast('Error: ' + jobErr.message); btn.disabled = false; return; }
+          } else {
+            toast('Error: ' + jobErr.message); btn.disabled = false; return;
+          }
+        } else {
+          job = newJob;
+        }
       }
       const { data, error } = await sb.from('sessions').insert({
         ...payload, company_id: state.company.id, activity_type: job.activity_type,
         job_id: job.id, started_at: new Date().toISOString(), status: 'open',
       }).select().single();
-      if(error){ toast('Error: ' + error.message); return; }
+      if(error){ toast('Error: ' + error.message); btn.disabled = false; return; }
       clearFormDirty();
       localStorage.setItem('lfd_active_session_id', data.id);
       state.activeJob = job; state.activeSession = data;
