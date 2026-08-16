@@ -53,6 +53,33 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
+### Real Excel files instead of CSV, plus missing filter descriptions on PDFs (this session) — no new SQL, 1 new CDN library
+
+- **Every "CSV" export is now a real `.xlsx` file**, using SheetJS
+  (new CDN dependency). This was a genuine format limitation, not
+  something fixable within CSV: a `.csv` is plain text with no way to
+  carry column widths or structure, so no amount of formatting inside
+  the file could make Excel display it "properly" — Excel was always
+  going to render it as an unstyled wall of text. A real spreadsheet
+  file solves this at the format level: correct column widths sized to
+  content, a merged/spanning title block, and — as a side benefit —
+  the whole UTF-8/BOM encoding problem from earlier this session
+  disappears entirely, since `.xlsx` isn't a text format Excel has to
+  guess the encoding of.
+  - Note: the free/community version of SheetJS used here doesn't
+    support cell-level styling (bold text, colored fills) — that
+    requires a paid tier. What's included is genuinely real formatting
+    (structure, column widths, spanning title rows), just not colored/
+    bold text on top of it.
+  - Applies to all four: Campaign Export, Condition Report, Master
+    List Snapshot, and Full Backup. Buttons relabeled "Export/Generate
+    Excel" to match.
+- **Fixed two PDFs that were missing the filter-description block**
+  added to CSVs earlier this session — Condition Report and Master
+  List Snapshot PDFs now also show which companies/conditions/lists
+  are actually represented in that export, matching their Excel
+  counterparts.
+
 ### CSV formatting fixes + a real bug in Campaign export (this session) — no new SQL
 
 - **Fixed a real bug in Campaign CSV/PDF export**: it was requesting a
