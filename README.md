@@ -147,6 +147,50 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
+### Real fix: incomplete flow tests no longer count as "done" (this session) — no new SQL
+
+**This is a genuine behavior change, not just a display addition** — the
+previous Incomplete Inspections build only added a way to *see*
+incomplete entries; it didn't stop them from silently counting as
+finished everywhere else. Fixed properly this time:
+
+- **Job/campaign completion tracking** (`computeCompletionForCompanyBlock`
+  — the one function powering Company Home's progress numbers, the
+  pending-hydrant dropdown, and Campaign Detail's rollups) now requires
+  a flow test to have **all three readings, or be explicitly marked
+  Unable to Test**, before it counts as done. An entry saved incomplete
+  keeps that hydrant on the pending list — exactly where it should
+  stay until someone actually finishes it.
+- **Stats' Overdue for Retest** got the same fix — an incomplete flow
+  test no longer quietly resets a hydrant's retest clock. Only a
+  genuinely complete test (or Unable to Test) counts as a real retest.
+- Condition Check and Snow Removal are unaffected — they don't have a
+  "partial data" concept, so any entry there still counts as done, same
+  as before.
+- One practical side effect, worth knowing: since incomplete hydrants
+  now correctly stay pending, they'll also start showing up naturally
+  in the normal hydrant picker and Suggested Next Stop for that job —
+  not just the dedicated Incomplete Inspections list. That's intentional
+  and consistent with the fix.
+
+### Incomplete Inspections on the company side (this session) — no new SQL
+
+- **Company Home now shows its own Incomplete Inspections** — same
+  underlying logic as the chief-level Stats version (excludes anything
+  marked Unable to Test), scoped to that company's own hydrants across
+  all of their Lists, not just whichever List they're currently signed
+  into.
+- **Tapping one jumps straight into finishing it** — resumes or
+  creates whatever job/shift is needed for that hydrant's own List
+  (switching the signed-in List if needed, same as picking it manually
+  would), then lands directly in the Flow Test form with that hydrant
+  already selected. This required a small special case: an incomplete
+  entry already technically counts as "done" for job-progress purposes
+  (it has *an* entry, just a blank one), so it wouldn't normally appear
+  in the pending-hydrant dropdown — the fix reuses the same "browse any
+  hydrant" override path the manual search already had, rather than
+  needing changes to how job completion is tracked.
+
 ### "Unable to Test" (this session) — requires migration 020
 
 - **`sql/020_unable_to_test.sql`** — adds `unable_to_test` to
