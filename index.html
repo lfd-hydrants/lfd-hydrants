@@ -1235,6 +1235,9 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
         <div class="field"><label>Residual (psi)</label><input type="number" id="f_residual"></div>
         <div class="field"><label>Pitot (psi)</label><input type="number" id="f_pitot"></div>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0 12px;">
+        <input type="checkbox" id="f_unable" style="width:auto;"> Unable to Test <span class="hint" style="margin:0;">(hydrant couldn't be tested — skips the missing-reading warning)</span>
+      </label>
       <div class="field"><label>Gauge Flow Reading (GPM) — optional</label><input type="number" id="f_gauge_flow" placeholder="If your gauge shows one directly"></div>
       <div class="calc-box">
         <div class="calc-row"><span>Flow at test</span><span class="v" id="c_flow">— gpm</span></div>
@@ -1277,6 +1280,9 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
   ['f_pitot','f_static','f_residual'].forEach(id=>{
     document.getElementById(id).addEventListener('input', calc);
   });
+  document.getElementById('f_condition').addEventListener('change', (e)=>{
+    if(e.target.value === 'oos') document.getElementById('f_unable').checked = true;
+  });
 
   async function doSaveFlowTest(){
     const hydrantId = selectedHydrantId || document.getElementById('f_hydrant').value;
@@ -1295,6 +1301,7 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
       flow_at_20psi: flow20!==null ? Math.round(flow20) : null,
       condition: document.getElementById('f_condition').value,
       wet_dry: document.getElementById('f_wet').checked ? 'wet' : 'dry',
+      unable_to_test: document.getElementById('f_unable').checked,
       notes: document.getElementById('f_notes').value || null,
     });
     if(error){ toast('Error: ' + error.message); return; }
@@ -1306,6 +1313,10 @@ function renderFlowTestForm(main, headerHtml, pending, s, job){
   document.getElementById('saveBtn').onclick = async ()=>{
     const hydrantId = selectedHydrantId || document.getElementById('f_hydrant').value;
     if(!hydrantId){ toast('Select a hydrant'); return; }
+    if(document.getElementById('f_unable').checked){
+      await doSaveFlowTest();
+      return;
+    }
     const missing = [];
     if(!document.getElementById('f_static').value) missing.push('Static');
     if(!document.getElementById('f_residual').value) missing.push('Residual');
@@ -1830,6 +1841,9 @@ async function openEditLogEntryModal(entryId, onSaved){
       <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0 12px;">
         <input type="checkbox" id="e_wet" style="width:auto;" ${row.wet_dry==='wet'?'checked':''}> Wet? <span class="hint" style="margin:0;">(assumed dry unless checked)</span>
       </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;">
+        <input type="checkbox" id="e_unable" style="width:auto;" ${row.unable_to_test?'checked':''}> Unable to Test
+      </label>
       <div class="field"><label>Notes</label><textarea id="e_notes">${esc(row.notes||'')}</textarea></div>
     `;
   }
@@ -1920,6 +1934,7 @@ async function openEditLogEntryModal(entryId, onSaved){
         flow_at_20psi: flow20!==null ? Math.round(flow20) : null,
         condition: document.getElementById('e_condition').value,
         wet_dry: document.getElementById('e_wet').checked ? 'wet' : 'dry',
+        unable_to_test: document.getElementById('e_unable').checked,
       };
     }
     const { error } = await sb.from('hydrant_tests').update(updatePayload).eq('id', entryId);
@@ -2046,6 +2061,7 @@ async function renderStats(){
   });
   const incompleteHydrantIds = Object.keys(latestFlowTestByHydrant).filter(hid => {
     const test = latestFlowTestByHydrant[hid];
+    if(test.unable_to_test) return false;
     return test.static_psi == null || test.residual_psi == null || test.pitot_psi == null;
   });
   const incomplete = h.filter(hy => incompleteHydrantIds.includes(hy.id));
