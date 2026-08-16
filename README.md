@@ -53,6 +53,22 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
+### In-app Help link + training document (this session) — no new SQL
+
+- **"?" Help button** added to every header — the login screen, the
+  company shell, and the chief shell. Opens a collapsible reference
+  covering the real workflow: signing in, starting/ending a job,
+  entering each activity type, Unable to Test vs. incomplete-save,
+  Report Hydrant, what the status colors mean and why they stick,
+  offline sheets. Chief/admin logins additionally see sections on
+  Campaigns, the three report types, Mark Repaired, Stats, and
+  Settings — content is tailored to who's actually signed in.
+- **`LFD_Hydrant_App_Training_Guide.docx`** — a standalone Word document
+  for teaching the department, covering the same ground as the in-app
+  Help but formatted for printing/presenting: numbered sections, callout
+  boxes for the "gotcha" moments (missing readings, Unable to Test,
+  sticky status), and a one-page quick-reference table at the end.
+
 ### Real Excel files instead of CSV, plus missing filter descriptions on PDFs (this session) — no new SQL, 1 new CDN library
 
 - **Every "CSV" export is now a real `.xlsx` file**, using SheetJS
