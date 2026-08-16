@@ -53,6 +53,28 @@ visibility, stats, and exportable reports/backups.
 
 ## Build history
 
+### CSV formatting fixes + a real bug in Campaign export (this session) — no new SQL
+
+- **Fixed a real bug in Campaign CSV/PDF export**: it was requesting a
+  field (`tested_at`) from the wrong table in its Supabase query —
+  that field doesn't exist on `sessions`, only on `hydrant_tests` —
+  which silently failed and returned zero rows **every single time**,
+  for every campaign, regardless of how much real data existed. This
+  had nothing to do with a data threshold; it was broken from the start.
+- **Every CSV export now has a descriptive header block** at the top —
+  report title, the active filter conditions (companies selected,
+  condition/status filters, campaign name/activity), generation date,
+  and record count — before the actual column headers. Professional
+  enough to hand off or file, not just a raw data dump.
+- **Fixed the actual cause of "columns look wrong" in Excel**: every
+  CSV now includes a UTF-8 byte-order-mark (BOM) prefix. Without it,
+  Excel doesn't reliably detect UTF-8 encoding and can misread
+  non-ASCII characters (the app uses em-dashes and similar throughout),
+  which visually breaks column alignment even though the underlying
+  comma/quote escaping was already correct. This affects Campaign
+  Export, Condition Report, Master List Snapshot, and Full Backup —
+  all four CSV exports in the app.
+
 ### Real fix: incomplete flow tests no longer count as "done" (this session) — no new SQL
 
 **This is a genuine behavior change, not just a display addition** — the
