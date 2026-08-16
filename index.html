@@ -16,6 +16,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{ --ink:#1a1a1a; --paper:#f6f5f1; --card:#fff; --red:#b3231c; --red-deep:#7d1712;
     --steel:#3c4c55; --line:#d8d5cc; --ok:#2f6b3a; --warn:#a8631b; }
@@ -126,6 +127,37 @@ function toast(msg){
   setTimeout(()=>t.classList.remove('show'), 1800);
 }
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Builds a real .xlsx file (not a text CSV) so exports open with actual
+// spreadsheet structure — real column widths, merged/spanning title
+// rows — rather than plain text Excel has to guess at formatting for.
+// headerBlockRows: array of single-cell title/subtitle rows (e.g.
+// [['Report Title'], ['Generated: ...']]) shown above the data, each
+// automatically merged across the full column width.
+function downloadXlsx(filename, headerBlockRows, columnHeaders, dataRows){
+  const wb = XLSX.utils.book_new();
+  const aoa = [...headerBlockRows, columnHeaders, ...dataRows];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const colCount = columnHeaders.length;
+  const widths = columnHeaders.map((h, c) => {
+    let maxLen = (h||'').toString().length;
+    dataRows.forEach(row => {
+      const len = (row[c]==null ? '' : row[c].toString()).length;
+      if(len > maxLen) maxLen = len;
+    });
+    return { wch: Math.min(Math.max(maxLen+2, 8), 50) };
+  });
+  ws['!cols'] = widths;
+  ws['!merges'] = headerBlockRows.map((row,i)=> (row && row.length && row[0]) ? { s:{r:i,c:0}, e:{r:i,c:colCount-1} } : null).filter(Boolean);
+  XLSX.utils.book_append_sheet(wb, ws, 'Report');
+  const wbout = XLSX.write(wb, { bookType:'xlsx', type:'array' });
+  const blob = new Blob([wbout], { type:'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 function attachDatePicker(id){
   const el = document.getElementById(id);
   if(!el) return;
@@ -1687,7 +1719,7 @@ async function renderMasterHydrantList(opts){
         </div>
         <button class="secondary" id="seeAllBtn">See All Hydrants (Citywide)</button>
         <div class="btn-row" style="margin-top:10px;">
-          <button class="small" id="mhSnapshotCsvBtn">Export CSV</button>
+          <button class="small" id="mhSnapshotCsvBtn">Export Excel</button>
           <button class="small" id="mhSnapshotPdfBtn">Export PDF</button>
         </div>
         <div id="mhList" style="margin-top:10px;"></div>
@@ -2488,7 +2520,7 @@ async function renderCampaignDetail(campaignId){
       <div class="btn-row" style="margin-top:10px;">
         <button class="small" id="editCampBtn">Edit</button>
         ${campaign.status==='open' ? '<button class="small danger" id="closeCampBtn">Close Campaign</button>' : '<button class="small ok" id="reopenCampBtn">Reopen Campaign</button>'}
-        <button class="small neutral" id="exportCsvBtn">Export CSV</button>
+        <button class="small neutral" id="exportCsvBtn">Export Excel</button>
         <button class="small neutral" id="exportPdfBtn">Export PDF</button>
       </div>
     </div>
@@ -2520,18 +2552,19 @@ async function renderCampaignDetail(campaignId){
   document.getElementById('exportCsvBtn').onclick = async ()=>{
     const rows = await getCampaignScopedRows();
     if(!rows.length){ toast('No data to export'); return; }
+    const headerBlock = [
+      [`Campaign Report: ${campaign.name}`],
+      [`Activity: ${ACTIVITY_LABELS[campaign.activity_type]} | Started: ${fmtDate(campaign.created_at)} | Status: ${campaign.status==='open'?'Open':'Closed '+fmtDate(campaign.closed_at)}`],
+      [`Generated: ${fmtDate(new Date())} | ${rows.length} records`],
+      [],
+    ];
     const headers = ['Hydrant','Address','Company','List','Date','Static','Residual','Pitot','Flow','Condition','SnowCleared','SnowFlag','WetDry','Notes'];
     const out = rows.map(r => {
       const compName = state.companies.find(c=>c.id===r.hydrants?.company_id)?.name || '';
       const divName = r.hydrants?.block || '';
       return [r.hydrants?.hydrant_number, r.hydrants?.address, compName, divName, fmtDate(r.tested_at), r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.condition, r.snow_cleared_status, r.snow_condition_flag, r.wet_dry, r.notes];
     });
-    const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-    const csv = [headers.join(','), ...out.map(r=>r.map(esc2).join(','))].join('\n');
-    const blob = new Blob([csv], {type:'text/csv'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'campaign-'+campaignId.slice(0,8)+'.csv';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    downloadXlsx('campaign-'+campaignId.slice(0,8)+'.xlsx', headerBlock, headers, out);
   };
   document.getElementById('exportPdfBtn').onclick = async ()=>{
     const rows = await getCampaignScopedRows();
@@ -2596,7 +2629,7 @@ async function renderReportsTab(){
     </div>
     <div class="card" id="reportSummary">Loading…</div>
     <div class="card">
-      <button class="primary" id="reportCsvBtn">Generate CSV</button>
+      <button class="primary" id="reportCsvBtn">Generate Excel</button>
       <button class="secondary" id="reportPdfBtn">Generate PDF</button>
     </div>`;
 
@@ -2666,34 +2699,46 @@ async function loadReportSummary(){
   `;
 }
 
+function conditionReportFilterDesc(rows){
+  const companyDesc = reportSelectedCompanyIds.length
+    ? reportSelectedCompanyIds.map(id=>state.companies.find(c=>c.id===id)?.name).filter(Boolean).join(', ')
+    : 'All Companies (citywide)';
+  const conditionDesc = reportStatusToggles.size ? [...reportStatusToggles].map(v=>v==='oos'?'OOS':v.charAt(0).toUpperCase()+v.slice(1)).join(', ') : 'All Conditions';
+  return { companyDesc, conditionDesc };
+}
+
 async function generateConditionReportCsv(){
   const rows = await buildConditionReportRows();
   if(!rows.length){ toast('No matching hydrants'); return; }
+  const { companyDesc, conditionDesc } = conditionReportFilterDesc(rows);
+  const headerBlock = [
+    ['Condition Report'],
+    [`Companies: ${companyDesc}`],
+    [`Condition Filter: ${conditionDesc}`],
+    [`Generated: ${fmtDate(new Date())} | ${rows.length} hydrants`],
+    [],
+  ];
   const headers = ['Hydrant','Address','Date Last Checked'];
   const out = rows.map(r => [r.hydrant_number, r.address, r.lastChecked ? fmtDate(r.lastChecked) : 'Never']);
-  const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-  const csv = [headers.join(','), ...out.map(r=>r.map(esc2).join(','))].join('\n');
-  const blob = new Blob([csv], {type:'text/csv'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'condition-report-'+new Date().toISOString().slice(0,10)+'.csv';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  toast('CSV downloaded');
+  downloadXlsx('condition-report-'+new Date().toISOString().slice(0,10)+'.xlsx', headerBlock, headers, out);
+  toast('Excel file downloaded');
 }
 
 async function generateConditionReportPdf(){
   const rows = await buildConditionReportRows();
   if(!rows.length){ toast('No matching hydrants'); return; }
+  const { companyDesc, conditionDesc } = conditionReportFilterDesc(rows);
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
   doc.setFontSize(16);
   doc.text('Lynn Fire Department — Condition Report', 14, 16);
   doc.setFontSize(10);
-  doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' hydrants', 14, 23);
+  doc.text(`Companies: ${companyDesc}`, 14, 23);
+  doc.text(`Condition Filter: ${conditionDesc}`, 14, 28);
+  doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' hydrants', 14, 33);
   const headers = ['Hydrant','Address','Date Last Checked'];
   const body = rows.map(r => [r.hydrant_number, r.address, r.lastChecked ? fmtDate(r.lastChecked) : 'Never']);
-  doc.autoTable({ head: [headers], body, startY: 28, styles: { fontSize: 9 }, headStyles: { fillColor: [26,26,26] } });
+  doc.autoTable({ head: [headers], body, startY: 38, styles: { fontSize: 9 }, headStyles: { fillColor: [26,26,26] } });
   doc.save('condition-report-'+new Date().toISOString().slice(0,10)+'.pdf');
   toast('PDF downloaded');
 }
@@ -2749,34 +2794,50 @@ async function buildMasterSnapshotRows(hydrantsList){
   });
 }
 
+function summarizeHydrantScope(hydrantsList){
+  const companyIds = new Set(hydrantsList.map(h=>h.company_id));
+  let companyDesc;
+  if(companyIds.size === state.companies.length) companyDesc = 'All Companies (citywide)';
+  else {
+    const names = [...companyIds].map(id=>state.companies.find(c=>c.id===id)?.name).filter(Boolean).sort(compareCompanyNames);
+    companyDesc = names.length <= 5 ? names.join(', ') : `${names.length} companies`;
+  }
+  const blockSet = new Set(hydrantsList.map(h=>h.block));
+  const blockDesc = blockSet.size === 1 ? `List ${[...blockSet][0]}` : (blockSet.size <= 4 ? [...blockSet].sort().map(b=>'List '+b).join(', ') : 'All Lists');
+  return { companyDesc, blockDesc };
+}
+
 async function exportMasterSnapshotCsv(hydrantsList){
   if(!hydrantsList.length){ toast('No hydrants to export'); return; }
   const rows = await buildMasterSnapshotRows(hydrantsList);
+  const { companyDesc, blockDesc } = summarizeHydrantScope(hydrantsList);
+  const headerBlock = [
+    ['Master Hydrant List Snapshot'],
+    [`Companies: ${companyDesc}`],
+    [`Lists: ${blockDesc}`],
+    [`Generated: ${fmtDate(new Date())} | ${rows.length} hydrants`],
+    [],
+  ];
   const headers = ['Hydrant','Address','Company','List','Status','Wet/Dry','Last Interaction','Last Flow Test','Static','Residual','Pitot','Flow','Flow@20psi'];
   const out = rows.map(r => [r.hydrant_number, r.address, r.company, r.block, r.statusLabel, r.wetDry, r.lastInteraction, r.lastFlowTest, r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.flow_at_20psi]);
-  const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-  const csv = [headers.join(','), ...out.map(r=>r.map(esc2).join(','))].join('\n');
-  const blob = new Blob([csv], {type:'text/csv'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'master-list-snapshot-'+new Date().toISOString().slice(0,10)+'.csv';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  toast('CSV downloaded');
+  downloadXlsx('master-list-snapshot-'+new Date().toISOString().slice(0,10)+'.xlsx', headerBlock, headers, out);
+  toast('Excel file downloaded');
 }
 
 async function exportMasterSnapshotPdf(hydrantsList){
   if(!hydrantsList.length){ toast('No hydrants to export'); return; }
   const rows = await buildMasterSnapshotRows(hydrantsList);
+  const { companyDesc, blockDesc } = summarizeHydrantScope(hydrantsList);
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'landscape' });
   doc.setFontSize(16);
   doc.text('Lynn Fire Department — Master Hydrant List', 14, 16);
   doc.setFontSize(10);
-  doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' hydrants', 14, 23);
+  doc.text(`Companies: ${companyDesc}  ·  Lists: ${blockDesc}`, 14, 23);
+  doc.text('Generated ' + fmtDate(new Date()) + '  ·  ' + rows.length + ' hydrants', 14, 28);
   const headers = ['Hydrant','Address','Company','List','Status','Wet/Dry','Last Interaction','Last Flow Test','Static','Residual','Pitot','Flow','Flow@20psi'];
   const body = rows.map(r => [r.hydrant_number, r.address, r.company, r.block, r.statusLabel, r.wetDry, r.lastInteraction, r.lastFlowTest, r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.flow_at_20psi]);
-  doc.autoTable({ head: [headers], body, startY: 28, styles: { fontSize: 7 }, headStyles: { fillColor: [26,26,26] } });
+  doc.autoTable({ head: [headers], body, startY: 33, styles: { fontSize: 7 }, headStyles: { fillColor: [26,26,26] } });
   doc.save('master-list-snapshot-'+new Date().toISOString().slice(0,10)+'.pdf');
   toast('PDF downloaded');
 }
@@ -3133,7 +3194,7 @@ function renderSettingsTab(){
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Export</h3>
-      <button class="secondary" id="exportBtn">Download Full Backup (CSV)</button>
+      <button class="secondary" id="exportBtn">Download Full Backup (Excel)</button>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Offline Sheets</h3>
@@ -3213,16 +3274,14 @@ function renderSettingsTab(){
   document.getElementById('exportBtn').onclick = async ()=>{
     const { data } = await sb.from('hydrant_tests').select('*, hydrants(hydrant_number,address)');
     if(!data || !data.length){ toast('No data yet'); return; }
+    const headerBlock = [
+      ['Full Hydrant Test Backup — All Records'],
+      [`Generated: ${fmtDate(new Date())} | ${data.length} records`],
+      [],
+    ];
     const headers = ['Hydrant','Address','Date','Static','Residual','Pitot','Flow','Drop%','Flow@20psi','Condition','SnowCleared','SnowFlag','WetDry','Notes'];
     const rows = data.map(r=>[r.hydrants?.hydrant_number, r.hydrants?.address, fmtDate(r.tested_at), r.static_psi, r.residual_psi, r.pitot_psi, r.flow_gpm, r.drop_pct, r.flow_at_20psi, r.condition, r.snow_cleared_status, r.snow_condition_flag, r.wet_dry, r.notes]);
-    const esc2 = v => { const s=(v??'').toString(); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-    const csv = [headers.join(','), ...rows.map(r=>r.map(esc2).join(','))].join('\n');
-    const blob = new Blob([csv], {type:'text/csv'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'hydrant-backup-'+new Date().toISOString().slice(0,10)+'.csv';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadXlsx('hydrant-backup-'+new Date().toISOString().slice(0,10)+'.xlsx', headerBlock, headers, rows);
   };
   document.getElementById('genOfflineBtn').onclick = generateAllOfflineSheets;
 }
